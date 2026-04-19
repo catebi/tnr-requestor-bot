@@ -6,7 +6,7 @@ Telegram bot for a TNR sterilisation programme. It helps people who submitted th
 
 - Python 3.10 or newer
 - A [Telegram bot token](https://t.me/BotFather)
-- An [Airtable](https://airtable.com/) base with a table named `sterilization_request` and a personal access token that can read that base
+- An [Airtable](https://airtable.com/) base with a table named `sterilization_request` and a personal access token that can read that base (`data.records:read`). If you use **`SYNC_TELEGRAM_CHAT_ID`**, the same token must also have **`data.records:write`** for that base, or PATCH returns **403 Forbidden**.
 
 ## Setup
 
@@ -51,7 +51,8 @@ Copy `.env.example` to `.env` and set the values you need.
 | `NOTIFY_WEBHOOK_SECRET` | Secret for `POST /notify/airtable` (Airtable automation → notify server) |
 | `NOTIFY_HOST` / `NOTIFY_PORT` | Bind for uvicorn notify app (default `127.0.0.1` / `8080`) |
 | `TELEGRAM_CHAT_STORE_PATH` | Optional absolute path to the shared handle→chat_id JSON store (default `.telegram_chat_store.json` in cwd) |
-| `SYNC_TELEGRAM_CHAT_ID` | `true` to save `telegram_chat_id` on `/start` (needs Airtable write + field) |
+| `SYNC_TELEGRAM_CHAT_ID` | `true` to save `telegram_chat_id` on `/start` and `/myrequests` (needs Airtable write + field) |
+| `AIRTABLE_TELEGRAM_CHAT_ID_AS_STRING` | `true` (default) sends the chat id as a string for **Single line text** fields; set `false` if `telegram_chat_id` is a **Number** column and the API rejects strings |
 
 For local development, **long polling** is enough: leave `BOT_TRANSPORT` unset or set it to `polling`. For production behind HTTPS, use **webhooks** and configure your reverse proxy to forward traffic to the process `WEBHOOK_LISTEN` / `PORT`.
 
@@ -65,9 +66,11 @@ When a **`sterilization_request`** row is created, you can call a small **FastAP
 |----------|-------------|
 | `NOTIFY_WEBHOOK_SECRET` | Shared secret; required for `POST /notify/airtable`. Send as header `X-Notify-Secret` or JSON field `secret`. |
 | `NOTIFY_HOST` / `NOTIFY_PORT` | Bind address for the notify server (defaults `127.0.0.1` and `8080`). |
-| `SYNC_TELEGRAM_CHAT_ID` | If `true`, `/start` and `/myrequests` PATCH matching rows with `telegram_chat_id` (needs PAT **write** + field on table). |
+| `SYNC_TELEGRAM_CHAT_ID` | If `true`, `/start` and `/myrequests` PATCH **every** matching row with `telegram_chat_id` in one go (needs PAT **write** + field on table). |
 
-**Airtable base:** add a **Number** (or single-line text) field **`telegram_chat_id`** on `sterilization_request` if you use `SYNC_TELEGRAM_CHAT_ID=true`.
+When sync is enabled, **all** `sterilization_request` records that match the user’s handle (same formula as the listing) are updated with their Telegram numeric chat id—not only a single row. If there are **no** matching rows, nothing is written to Airtable (there is no row to update).
+
+**Airtable base:** add a **Number** or **Single line text** field **`telegram_chat_id`** on `sterilization_request` if you use `SYNC_TELEGRAM_CHAT_ID=true`. The API value type must match the column: **text** columns need a string (default env); **Number** columns need a JSON number (`AIRTABLE_TELEGRAM_CHAT_ID_AS_STRING=false`). If PATCH returns **422** `INVALID_VALUE_FOR_COLUMN`, fix the field type or this env var.
 
 **Run the notify server locally (second terminal):**
 

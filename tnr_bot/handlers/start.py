@@ -57,7 +57,12 @@ async def reply_with_matching_requests(update: Update) -> None:
     if sync_chat_id_enabled():
         chat_id = update.effective_chat.id
         try:
-            await patch_telegram_chat_id_on_records([r["id"] for r in records], chat_id)
+            synced = await patch_telegram_chat_id_on_records([r["id"] for r in records], chat_id)
+            if synced:
+                logger.info(
+                    "Synced telegram_chat_id to %s matching sterilization_request row(s)",
+                    len(records),
+                )
         except Exception:
             logger.exception(
                 "Could not sync telegram_chat_id to Airtable (check SYNC_TELEGRAM_CHAT_ID, "
