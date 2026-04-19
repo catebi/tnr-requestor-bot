@@ -194,15 +194,33 @@ def format_contact_list_text(records: list[dict[str, Any]], directory: OperatorD
     return "\n".join(lines)
 
 
-def build_notify_new_request_message(record: dict[str, Any]) -> str:
-    """
-    One Telegram message for a webhook: prefix plus summary, compact and truncate as needed.
-    """
+def _build_notify_message_with_prefix(record: dict[str, Any], prefix: str) -> str:
+    """Prefix plus request summary; compact and truncate to one Telegram message."""
     max_len = MessageLimit.MAX_TEXT_LENGTH
-    prefix = "New sterilization request:\n\n"
     for compact in (False, True):
         body = build_summary_text([record], compact=compact)
         text = prefix + body
         if len(text) <= max_len:
             return text
     return (prefix + build_summary_text([record], compact=True))[:max_len]
+
+
+def build_notify_new_request_message(record: dict[str, Any]) -> str:
+    """Webhook: new row (or default notify type)."""
+    return _build_notify_message_with_prefix(record, "New sterilization request:\n\n")
+
+
+def build_notify_operator_assigned_message(record: dict[str, Any]) -> str:
+    """Webhook: ``operator`` field was set or changed."""
+    return _build_notify_message_with_prefix(
+        record,
+        "An operator was assigned to your sterilization request:\n\n",
+    )
+
+
+def build_notify_status_changed_message(record: dict[str, Any]) -> str:
+    """Webhook: ``status`` field was updated."""
+    return _build_notify_message_with_prefix(
+        record,
+        "Your sterilization request status was updated:\n\n",
+    )

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,16 +22,37 @@ from tnr_bot.integrations.airtable import (
 )
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
 from tnr_bot.integrations.telegram_api import send_message
-from tnr_bot.utils.formatting import build_notify_new_request_message
+from tnr_bot.utils.formatting import (
+    build_notify_new_request_message,
+    build_notify_operator_assigned_message,
+    build_notify_status_changed_message,
+)
 from tnr_bot.utils.telegram_identity import normalize_handle
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TNR Airtable notify webhook", version="0.1.0")
 
-# Short-window dedup for automation double-fires (seconds)
+# Short-window dedup for automation double-fires (seconds). Keyed by record_id + event
+# so operator and status updates in quick succession are not suppressed.
 _DEDUP_SEC = 45.0
 _recent_notify_times: dict[str, float] = {}
+
+NotifyEvent = Literal["new_request", "operator_assigned", "status_changed"]
+
+
+def _normalize_notify_event(raw: str | None) -> NotifyEvent:
+    if raw is None or not str(raw).strip():
+        return "new_request"
+    s = str(raw).strip().lower().replace("-", "_")
+    if s in ("new_request", "operator_assigned", "status_changed"):
+        return s
+    logger.warning("Unknown notify event %r; using new_request", raw)
+    return "new_request"
+
+
+def _dedup_key(record_id: str, event: NotifyEvent) -> str:
+    return f"{record_id}:{event}"
 
 
 class NotifyBody(BaseModel):
@@ -42,6 +63,11 @@ class NotifyBody(BaseModel):
     record_id: str | None = Field(None, description="Airtable record id rec…")
     recordId: str | None = Field(None, description="camelCase alias")
     secret: str | None = Field(None, description="Optional body secret if headers unavailable")
+    event: str | None = Field(
+        None,
+        description="new_request | operator_assigned | status_changed (aliases: notify_type)",
+    )
+    notify_type: str | None = Field(None, description="Alias for event")
 
 
 def _get_record_id(payload: NotifyBody) -> str:
@@ -49,6 +75,18 @@ def _get_record_id(payload: NotifyBody) -> str:
     if not rid or not str(rid).strip():
         raise HTTPException(status_code=400, detail="record_id or recordId is required")
     return str(rid).strip()
+
+
+def _get_notify_event(payload: NotifyBody) -> NotifyEvent:
+    return _normalize_notify_event(payload.event or payload.notify_type)
+
+
+def _build_message_for_event(record: dict[str, Any], event: NotifyEvent) -> str:
+    if event == "operator_assigned":
+        return build_notify_operator_assigned_message(record)
+    if event == "status_changed":
+        return build_notify_status_changed_message(record)
+    return build_notify_new_request_message(record)
 
 
 @app.get("/health")
@@ -63,7 +101,7 @@ async def notify_airtable(
 ) -> dict[str, Any]:
     """
     Verify shared secret, load the sterilization_request row, resolve Telegram chat_id,
-    and send a short summary message.
+    and send a message. Optional ``event`` selects the template (default: new_request).
     """
     expected = os.getenv("NOTIFY_WEBHOOK_SECRET", "").strip()
     if not expected:
@@ -74,12 +112,19 @@ async def notify_airtable(
         raise HTTPException(status_code=401, detail="Invalid or missing secret")
 
     record_id = _get_record_id(payload)
+    event = _get_notify_event(payload)
 
     now = time.monotonic()
-    last = _recent_notify_times.get(record_id)
+    dk = _dedup_key(record_id, event)
+    last = _recent_notify_times.get(dk)
     if last is not None and (now - last) < _DEDUP_SEC:
-        logger.info("Duplicate notify ignored for record_id=%s (within %ss)", record_id, _DEDUP_SEC)
-        return {"status": "skipped_duplicate", "record_id": record_id}
+        logger.info(
+            "Duplicate notify ignored for record_id=%s event=%s (within %ss)",
+            record_id,
+            event,
+            _DEDUP_SEC,
+        )
+        return {"status": "skipped_duplicate", "record_id": record_id, "event": event}
 
     record = await fetch_record_by_id(record_id)
     if record is None:
@@ -89,7 +134,7 @@ async def notify_airtable(
     telegram_raw = fields.get("telegram")
     if not telegram_raw or not str(telegram_raw).strip():
         logger.info("Record %s has no telegram field; skip send", record_id)
-        return {"status": "skipped_no_telegram", "record_id": record_id}
+        return {"status": "skipped_no_telegram", "record_id": record_id, "event": event}
 
     normalized = normalize_handle(str(telegram_raw).strip())
     chat_id = await resolve_telegram_chat_id_for_notify(record, normalized)
@@ -98,9 +143,9 @@ async def notify_airtable(
             "No telegram_chat_id for handle=%s (user may not have /start the bot yet)",
             normalized,
         )
-        return {"status": "skipped_no_chat_id", "record_id": record_id}
+        return {"status": "skipped_no_chat_id", "record_id": record_id, "event": event}
 
-    text = build_notify_new_request_message(record)
+    text = _build_message_for_event(record, event)
 
     await send_message(chat_id, text)
 
@@ -122,13 +167,14 @@ async def notify_airtable(
     except Exception:
         logger.exception("PATCH telegram_chat_id after notify (backfill same-handle rows) failed")
 
-    _recent_notify_times[record_id] = now
+    _recent_notify_times[dk] = now
     if len(_recent_notify_times) > 5000:
         _recent_notify_times.clear()
 
     return {
         "status": "sent",
         "record_id": record_id,
+        "event": event,
         "chat_id": chat_id,
         "telegram_chat_id_rows_patched": backfill_count,
     }

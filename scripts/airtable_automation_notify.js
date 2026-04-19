@@ -4,7 +4,7 @@
  * Trigger: When a record is created (or updated) in `sterilization_request`.
  *
  * Before running:
- * 1. In the Automation editor, add this script and define **three inputs** (see `input.config()` below).
+ * 1. In the Automation editor, add this script and define inputs (see `input.config()` below).
  * 2. Map **recordId** from the trigger: choose "Record ID" / Airtable record id (starts with `rec`).
  * 3. Set **notifyBaseUrl** to your public base URL only, e.g. `https://abcd.ngrok-free.app`
  *    (no trailing slash; update when ngrok restarts on the free tier).
@@ -14,12 +14,13 @@
  * The server expects:
  *   POST {notifyBaseUrl}/notify/airtable
  *   Header: X-Notify-Secret: <webhookSecret>
- *   JSON body: { "recordId": "<rec...>" }
+ *   JSON body: { "recordId": "<rec...>", "event": "<optional>" }
+ *   event: omit or "new_request" | "operator_assigned" | "status_changed"
  *
  * Requires: Automation "Run script" with `fetch` available (check your Airtable plan).
  */
 
-const { recordId, notifyBaseUrl, webhookSecret } = input.config();
+const { recordId, notifyBaseUrl, webhookSecret, notifyEvent } = input.config();
 
 if (!recordId || String(recordId).trim() === "") {
   throw new Error("Automation input `recordId` is missing. Map it from the trigger record.");
@@ -36,13 +37,18 @@ if (!webhookSecret || String(webhookSecret).trim() === "") {
 const base = String(notifyBaseUrl).trim().replace(/\/+$/, "");
 const url = `${base}/notify/airtable`;
 
+const body = { recordId: String(recordId).trim() };
+if (notifyEvent != null && String(notifyEvent).trim() !== "") {
+  body.event = String(notifyEvent).trim();
+}
+
 const response = await fetch(url, {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
     "X-Notify-Secret": String(webhookSecret).trim(),
   },
-  body: JSON.stringify({ recordId: String(recordId).trim() }),
+  body: JSON.stringify(body),
 });
 
 const text = await response.text();

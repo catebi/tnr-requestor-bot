@@ -87,9 +87,21 @@ uvicorn tnr_bot.notify_app:app --host "${NOTIFY_HOST:-127.0.0.1}" --port "${NOTI
 
    `{"recordId": "<Airtable record id>", "secret": "<NOTIFY_WEBHOOK_SECRET>"}`
 
+   Optional **`event`** (or **`notify_type`**) selects the message template:
+
+   | Value | Use when |
+   |-------|----------|
+   | `new_request` | (default) New row or generic notify — “New sterilization request…” |
+   | `operator_assigned` | **`operator`** was set or changed |
+   | `status_changed` | **`status`** was updated |
+
+   Example: `{"recordId":"rec…","event":"status_changed"}`
+
    to `https://<ngrok-host>/notify/airtable`
 
    Prefer sending `X-Notify-Secret` as a header instead of body `secret` when the automation supports it.
+
+**Operator / status updates (required in Airtable):** The Telegram bot does not see Airtable edits. Add **separate automations** (or one automation per case) with trigger **When a record is updated** in `sterilization_request`, and restrict **watch fields** to **`operator`** and/or **`status`** if your plan supports it. Point each automation at the same `POST /notify/airtable` URL and pass **`event`**: `operator_assigned` or `status_changed` so users get the right wording. Dedup is per `record_id` **and** `event`, so a status change shortly after an operator assignment still delivers both messages.
 
 4. Health check: `GET https://<ngrok-host>/health`
 
@@ -99,10 +111,10 @@ uvicorn tnr_bot.notify_app:app --host "${NOTIFY_HOST:-127.0.0.1}" --port "${NOTI
 curl -sS -X POST "http://127.0.0.1:8080/notify/airtable" \
   -H "Content-Type: application/json" \
   -H "X-Notify-Secret: $NOTIFY_WEBHOOK_SECRET" \
-  -d '{"record_id":"recXXXXXXXX"}'
+  -d '{"record_id":"recXXXXXXXX","event":"status_changed"}'
 ```
 
-**Airtable Automation script:** copy [`scripts/airtable_automation_notify.js`](scripts/airtable_automation_notify.js) into the Automation **Run script** action, then add the three inputs it expects (`recordId`, `notifyBaseUrl`, `webhookSecret`) and map `recordId` from the trigger’s record id.
+**Airtable Automation script:** copy [`scripts/airtable_automation_notify.js`](scripts/airtable_automation_notify.js) into the Automation **Run script** action, then add inputs: `recordId`, `notifyBaseUrl`, `webhookSecret`, and optionally **`notifyEvent`** (`new_request` / `operator_assigned` / `status_changed`). Map `recordId` from the trigger’s record id; set **`notifyEvent`** per automation (e.g. `status_changed` for a status-watch automation).
 
 ## Airtable
 
