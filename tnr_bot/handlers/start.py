@@ -1,4 +1,4 @@
-"""/start — list sterilization requests for the user's Telegram handle."""
+"""/start and /myrequests — list sterilization requests for the user's Telegram handle."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from tnr_bot.utils.telegram_identity import normalize_handle
 logger = logging.getLogger(__name__)
 
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def reply_with_matching_requests(update: Update) -> None:
+    """Fetch Airtable rows for this Telegram username and reply with id, dates, status, operator."""
     if update.effective_user is None or update.message is None:
         return
 
@@ -24,7 +25,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not username:
         await update.message.reply_text(
             "Set a public Telegram username in Settings so we can match your sterilization "
-            "form. Then send /start again."
+            "form. Then send /start or /myrequests again."
         )
         return
 
@@ -62,3 +63,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for start in range(0, len(text), chunk_size):
         part = text[start : start + chunk_size]
         await update.message.reply_text(part)
+
+
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await reply_with_matching_requests(update)
+
+
+async def myrequests_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await reply_with_matching_requests(update)
