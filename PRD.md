@@ -5,29 +5,31 @@
 **Primary release:** v1 — requestor-facing bot only  
 **Architecture:** Hybrid — Airtable is system of record; Telegram bot handles messaging and lightweight interactive state  
 
+**Schema source:** This PRD is aligned to the **`sterilization_main`** Airtable base. The canonical hub table for intake and requestor-facing logic is **`sterilization_request`**. Field names and single-select options follow the live base; confirm **field IDs** via the Airtable API when implementing integrations (names can change).
+
 ---
 
 ## 1. Problem statement, goals, non-goals, and success metrics
 
 ### 1.1 Problem statement
 
-Requestors submit one Airtable form per cat, then rely on ad hoc messages and memory for **what stage they are in**, **what to do next**, and **when and where to arrive** on castration days. That creates anxiety, repeated questions to operators, miscommunication about fasting and carriers, and **no-shows or late arrivals** that disrupt fixed-slot batch transport to the clinic.
+Requestors submit one Airtable form per cat, then rely on ad hoc messages and memory for **what stage they are in**, **what to do next**, and **when and where to arrive** for sterilisation and cat-flat logistics. That creates anxiety, repeated questions to operators, miscommunication about fasting and carriers, and **no-shows or late arrivals** that disrupt transport and clinic scheduling.
 
-Operators already coordinate day, time, and clinic manually. The product should **reduce coordination load** and **improve attendance reliability** without replacing operator judgment in v1.
+Operators already coordinate dates, clinics, and messages manually. The product should **reduce coordination load** and **improve reliability** without replacing operator judgment in v1.
 
 ### 1.2 Product goals (v1)
 
-- Give each linked requestor a **single, authoritative view of status** for their cat(s), aligned with Airtable.
-- **Confirm or surface inability to attend** for assigned castration-day slots, with structured capture of responses.
-- Send **timely, idempotent reminders** before castration day (and key post-op milestones where configured).
-- Provide a **clear branch for urgent pregnancy routing** (non–castration-day clinic path) with different expectations and copy.
+- Give each requestor a **single, authoritative view of status** for their cat(s), aligned with **`sterilization_request`** (and, when relevant, linked **`cat_flat_fostering`** records).
+- **Confirm or surface inability to attend** for scheduled sterilisation where the product adds confirmation flows (may require **extension fields** — see §5.4).
+- Send **timely, idempotent reminders** keyed off **`steril_date`** and **`status`** changes where configured.
+- Provide messaging that respects **pregnancy and urgency**, using **`is_pregnant`** / **`pregnant_notes`**, not separate fictional risk enums unless added to Airtable later.
 - Offer a **reliable human handoff** path (operator contact) for anything ambiguous or urgent.
 
 ### 1.3 Non-goals (v1)
 
 - Operator or volunteer **dashboards, bulk tools, or scheduling UIs inside Telegram**.
-- **Automated medical decisions** (priority beyond what operators already encode in Airtable; the bot does not diagnose).
-- **Payments**, donations, or invoicing.
+- **Automated medical decisions** (the bot does not diagnose; it reflects Airtable and approved copy).
+- **Processing payments** inside Telegram — the base already stores payment-related fields; the bot does not move money or replace finance workflows.
 - **Full medical records** or clinic EMR integration.
 - **Marketing broadcasts** unrelated to an active request.
 
@@ -36,9 +38,9 @@ Operators already coordinate day, time, and clinic manually. The product should 
 
 | Metric                      | Definition                                                                              | Target direction |
 | --------------------------- | --------------------------------------------------------------------------------------- | ---------------- |
-| Link rate                   | % of new form submissions with successful Telegram ↔ record link within 24h             | Increase         |
-| Pre-day confirmation rate   | % of assigned castration-day cases with explicit “attending” confirmation before cutoff | Increase         |
-| No-show / late arrival rate | Arrivals missed or >15 min late vs scheduled window (if logged in Airtable)             | Decrease         |
+| Link rate                   | % of new form submissions with successful Telegram ↔ record association within 24h   | Increase         |
+| Pre-day confirmation rate   | % of scheduled cases with explicit attendance confirmation before cutoff (if implemented) | Increase         |
+| No-show / late arrival rate | Missed or late arrivals vs planned window (if logged)                                  | Decrease         |
 | Operator time saved         | Self-reported minutes per case or weekly survey                                         | Increase         |
 | Delivery reliability        | Failed `sendMessage` / webhook errors per 100 notifications                             | Decrease         |
 | Support deflection          | Count of “where do I go?” messages to operators per case (baseline vs after)            | Decrease         |
@@ -46,394 +48,414 @@ Operators already coordinate day, time, and clinic manually. The product should 
 
 ---
 
-## 2. Personas and scope
+## 2. Database overview (`sterilization_main`)
 
-### 2.1 Primary persona — Requestor
+### 2.1 Base scope
 
-- Submitted the Airtable intake form for one cat (possibly multiple forms over time for multiple cats).
-- Uses Telegram; may have limited English or Georgian — **language choice** must be supported in copy and commands.
-- Needs **predictability**, **logistics**, and **what to bring**, not internal priority scores.
+The **`sterilization_main`** base holds **13 interconnected tables** covering sterilisation requests, cat-flat fostering, medical care, inventory, volunteer schedule, travel prep, and related data. Multilingual single-select options (Russian / English / Georgian) are used across many fields.
 
-### 2.2 Secondary personas (informed by PRD, not v1 bot users)
+### 2.2 Tables and bot relevance
 
-- **Operator:** Updates Airtable, speaks with requestors, finalizes schedule truth.
-- **Transport / clinic volunteer:** Consumes lists from Airtable (out of scope for bot UI in v1).
+| Table | Role for requestor bot |
+| ----- | ------------------------ |
+| **`sterilization_request`** | **Primary.** One row per submitted request; **`telegram`**, **`id`**, **`status`**, **`operator`**, **`created_date`**, logistics and cat fields. |
+| **`cat_flat_fostering`** | **Secondary.** Tracks the cat in the cat flat; linked via **`request`** → `sterilization_request`. Use for “in recovery / in flat” messaging when a fostering row exists. |
+| **`MedicalCare`**, **`TreatmentDays`** | Mostly **operator / medical**; bot may read later for rich recovery content. |
+| **`inventory`** | Equipment loans; **operator-led**; optional future bot surfacing. |
+| **`intake_release`**, **`_intake_release`** | Intake/release events and templates; coordinate with ops before automating messages. |
+| **`cat_travel_prep`**, **`cat_travel_contacts`** | International travel; **specialised** flows; out of default v1 scope. |
+| **`частота использования лекарств`** | Medication usage patterns; **not** requestor-facing by default. |
+| **`shedule`**, **`в наличии`**, **`в наличии 2`** | **Synced from other bases — read-only** in this base. The bot must **not** write to these tables. |
+
+### 2.3 Relationship diagram (core)
+
+```mermaid
+flowchart TB
+  subgraph hub [sterilization_request]
+    SR[sterilization_request]
+  end
+  subgraph flat [Cat flat and medical]
+    CFF[cat_flat_fostering]
+    MC[MedicalCare]
+    TD[TreatmentDays]
+    SH[shedule]
+  end
+  subgraph other [Other]
+    INV[inventory]
+    IR[intake_release]
+    CTP[cat_travel_prep]
+  end
+  SR -->|request| CFF
+  CFF --> MC
+  MC --> TD
+  TD -.->|duty matching| SH
+  SR --> INV
+  SR --> IR
+  SR --> CTP
+```
 
 ---
 
-## 3. Per-cat status model and transitions
+## 3. Personas and scope
 
-### 3.1 Status enum (canonical)
+### 3.1 Primary persona — Requestor
 
-Statuses are **per cat record** (one form = one cat). Names are implementation-facing; user-facing copy is localized.
+- Submitted the intake form (one submission per cat in **`sterilization_request`**).
+- Uses Telegram; **`language`** on the record may be **`ru`**, **`en`**, or **`ka`** — product copy should respect this when messaging.
+- Needs **predictability**, **logistics**, and **what to bring**, not internal priority scores.
 
+### 3.2 Secondary personas (informed by PRD, not v1 bot users)
 
-| Status ID                | User-facing bucket (example)   | Meaning                                                                               |
-| ------------------------ | ------------------------------ | ------------------------------------------------------------------------------------- |
-| `received`               | We received your request       | Form landed; not yet triaged for scheduling.                                          |
-| `under_review`           | We are reviewing your request  | Bot triaging; may need more info.                                                     |
-| `waitlisted`             | You are on the waitlist        | No slot on next castration day; may be re-offered later.                              |
-| `offered_slots`          | Please choose a suggested date | Bot may show buttons for candidate days (optional v1); pending operator confirmation. |
-| `scheduled_batch`        | Scheduled — castration day     | Assigned to a batch castration day + window; transport batch model.                   |
-| `scheduled_urgent`       | Scheduled — urgent clinic      | Pregnancy / medical urgency; **not** waiting for batch day; different clinic path.    |
-| `confirmed_attendance`   | You confirmed you are coming   | Requestor confirmed via bot (or operator checked manually).                           |
-| `declined_or_reschedule` | Cannot attend / rescheduling   | Requestor declined or asked reschedule; operator must act.                            |
-| `day_of_checked_in`      | Checked in today               | Optional if you track arrival on the day.                                             |
-| `at_clinic`              | At the clinic                  | Optional handoff state for ops.                                                       |
-| `post_op_recovery`       | Recovery in our cat flat       | Post-surgery recovery phase (~1 week).                                                |
-| `ready_for_pickup`       | Ready for pickup / return      | Transition out of flat.                                                               |
-| `completed`              | Completed                      | Case closed from requestor perspective.                                               |
-| `cancelled`              | Cancelled                      | Request withdrawn or organisation cannot serve.                                       |
+- **Operator:** Updates **`sterilization_request`** and related tables; assigned via **`operator`** single-select.
+- **Transport / clinic volunteer:** Uses Airtable views and schedules (out of scope for bot UI in v1).
+
+---
+
+## 4. Status model (aligned to Airtable)
+
+### 4.1 `sterilization_request.status` (single select)
+
+These are the **authoritative** workflow values on the request row. User-facing Telegram copy should map to these (not to a parallel fictional enum).
 
 
-**Note:** You can collapse optional ops states (`day_of_checked_in`, `at_clinic`) if they are not maintained reliably; the bot should only announce states that are **truthful and timely**.
+| Value (Airtable) | Meaning (summary) |
+| ---------------- | ----------------- |
+| **Новая заявка** | New request submitted. |
+| **Коммуникация с заявителем** | Operator is communicating with the requestor. |
+| **Стерилизация назначена** | Sterilisation scheduled — use with **`steril_date`** for timing. |
+| **Стерилизация перенесена** | Sterilisation rescheduled. |
+| **На пути в котодом** | Cat en route to the cat flat. |
+| **Возвращена заявителю** | Cat returned to requestor (requestor-facing completion path). |
+| **Стерилизация отменена** | Cancelled. |
+| **принята в кк** | Accepted at cat flat (“кк”). |
+| **Заявитель перестал отвечать** | No response from requestor. |
 
-### 3.2 Transition rules — who triggers what
+Optional **product notes** (for copywriters — not extra Airtable values):
+
+- **Новая заявка** — Acknowledge receipt; set expectations for operator contact.
+- **Коммуникация с заявителем** — May need more info; emphasise checking messages.
+- **Стерилизация назначена** — Drive reminders from **`steril_date`**; include **`clinic`**, **`district`**, **`address`** / **`geo_location`** as needed for logistics (see §7).
+- **На пути в котодом** / **принята в кк** — Coordinate handoff timing; align with fostering row if present.
+- **Стерилизация отменена** / **Заявитель перестал отвечать** — Sensitive tone; offer human support.
+
+### 4.2 `cat_flat_fostering.status` (single select)
+
+Used when a **`cat_flat_fostering`** row exists and links to the request (**`request`** field). Prefer this table for **in-flat / recovery** nuance; **`sterilization_request`** still holds top-level request lifecycle.
 
 
-| From                 | To                       | Typical trigger                                                       |
-| -------------------- | ------------------------ | --------------------------------------------------------------------- |
-| `received`           | `under_review`           | Operator begins triage (Airtable)                                     |
-| `under_review`       | `awaiting_requestor`     | Operator flags missing info                                           |
-| `awaiting_requestor` | `under_review`           | Requestor supplies info (manual operator update)                      |
-| `under_review`       | `waitlisted`             | No capacity; internal priority defers this cat                        |
-| `under_review`       | `offered_slots`          | Optional: automation offers 2–3 candidate days                        |
-| `offered_slots`      | `scheduled_batch`        | Operator approves a chosen candidate + assigns batch day              |
-| `under_review`       | `scheduled_batch`        | Operator assigns directly to castration day                           |
-| `under_review`       | `scheduled_urgent`       | Pregnancy / urgency path — operator assigns alternate clinic timeline |
-| `scheduled_`*        | `confirmed_attendance`   | Requestor taps Confirm OR operator sets confirmed                     |
-| `scheduled_`*        | `declined_or_reschedule` | Requestor taps Cannot attend OR operator records                      |
-| `scheduled_batch`    | `post_op_recovery`       | Surgery done + handoff to flat (operator)                             |
-| `scheduled_urgent`   | `post_op_recovery`       | Same, if recovery still uses flat                                     |
-| `post_op_recovery`   | `ready_for_pickup`       | Recovery milestone reached                                            |
-| `ready_for_pickup`   | `completed`              | Cat returned / case closed                                            |
-| `*`                  | `cancelled`              | Operator or policy                                                    |
+| Value (Airtable) | Meaning (summary) |
+| ---------------- | ----------------- |
+| на пути в кд | On the way to cat flat |
+| принята в кд | Accepted at cat flat |
+| ожидает стерилизацию | Awaiting sterilisation |
+| на стерилизации | In sterilisation |
+| готова к выписке | Ready for release |
+| на сторонней передержке | External foster |
+| передана заявителю | Returned to requestor |
+| назначен медуход | Medical care assigned |
+| укотовлена | Adopted |
+| в клинике | At clinic |
 
+**Product rule:** Decide explicitly (see §11) which fostering statuses trigger **requestor-visible** bot messages vs operator-only updates.
 
-### 3.3 State diagram (per cat)
+### 4.3 Pregnancy and urgency
+
+- Use **`is_pregnant`** (Да / Нет / Нет уверенности — trilingual options in base) and **`pregnant_notes`**.
+- Urgent or non-batch clinic routing is an **operator decision** reflected in **`clinic`**, **`status`**, **`notes`**, and related processes — not a separate `scheduled_urgent` status unless the organisation adds one.
+
+### 4.4 State diagrams
+
+**Request lifecycle (simplified)**
 
 ```mermaid
 stateDiagram-v2
   direction LR
-  received --> under_review: Operator triage
-  under_review --> awaiting_requestor: Need info
-  awaiting_requestor --> under_review: Info received
-  under_review --> waitlisted: No capacity
-  under_review --> offered_slots: Offer candidates
-  offered_slots --> scheduled_batch: Operator approves choice
-  under_review --> scheduled_batch: Direct assign batch
-  under_review --> scheduled_urgent: Pregnancy or urgency
-  scheduled_batch --> confirmed_attendance: Confirm
-  scheduled_urgent --> confirmed_attendance: Confirm
-  scheduled_batch --> declined_or_reschedule: Decline
-  scheduled_urgent --> declined_or_reschedule: Decline
-  scheduled_batch --> post_op_recovery: Surgery plus flat
-  scheduled_urgent --> post_op_recovery: Surgery plus flat
-  post_op_recovery --> ready_for_pickup: Recovery ok
-  ready_for_pickup --> completed: Closed
-  received --> cancelled: Withdraw
-  under_review --> cancelled: Withdraw
+  [*] --> Novaya[Новая заявка]
+  Novaya --> Kommunikatsiya[Коммуникация с заявителем]
+  Kommunikatsiya --> Naznachena[Стерилизация назначена]
+  Naznachena --> Perenesena[Стерилизация перенесена]
+  Naznachena --> NaPuti[На пути в котодом]
+  NaPuti --> PrinyataKK[принята в кк]
+  Naznachena --> Otmenena[Стерилизация отменена]
+  Kommunikatsiya --> NetOtveta[Заявитель перестал отвечать]
+  PrinyataKK --> Vozvrat[Возвращена заявителю]
 ```
 
+**Optional: fostering row (parallel track)**
 
-
----
-
-## 4. Airtable data model and hybrid “Bot events”
-
-### 4.1 Tables (recommended)
-
-1. `**Cats**` (or extend your existing intake table) — one row per cat / form submission.
-2. `**Requestors**` (optional normalization) — linked to many cats; stores stable contact + Telegram link. If you prefer fewer tables, keep requestor fields on `Cats` for v1.
-3. `**Castration_days**` — date, max slots, meeting point text, default arrival window, notes.
-4. `**Bot_events**` (recommended for hybrid state) — append-only log of structured bot actions for audit and idempotency.
-
-### 4.2 `Cats` — minimum fields for bot + ops
-
-
-| Field                                         | Type                         | Purpose                                                                           |
-| --------------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------- |
-| `public_request_id`                           | Autonumber or formula        | Stable, non-sensitive reference shown in Telegram (“Request #…”).                 |
-| `cat_name`                                    | Single line text             | Display name.                                                                     |
-| `status`                                      | Single select                | Enum from §3.1.                                                                   |
-| `pregnancy_risk`                              | Single select                | e.g. `none`, `early`, `late` — drives `scheduled_urgent` messaging.               |
-| `language`                                    | Single select                | `ka`, `en`, `ka_en`.                                                              |
-| `telegram_username_submitted`                 | Single line text             | From form (may be wrong).                                                         |
-| `telegram_user_id`                            | Number or text               | Filled after successful link; **primary** key for outbound messages.              |
-| `link_token`                                  | Single line text             | One-time or time-limited token for `/start`.                                      |
-| `link_token_expires_at`                       | Date/time                    | Token validity.                                                                   |
-| `linked_at`                                   | Date/time                    | Audit.                                                                            |
-| `castration_day`                              | Link to `Castration_days`    | Batch day assignment.                                                             |
-| `arrival_window_start` / `arrival_window_end` | Date/time or duration fields | Display to user.                                                                  |
-| `meeting_point_summary`                       | Single line text or rollup   | Could duplicate from `Castration_days` for overrides.                             |
-| `clinic_name`                                 | Single line text             | For urgent path or informational display.                                         |
-| `transport_batch_id`                          | Single line text             | Internal grouping.                                                                |
-| `internal_priority`                           | Number or formula            | **Not shown** to requestors by default.                                           |
-| `requestor_visibility_bucket`                 | Single select                | `soon`, `this_month`, `waitlist`, `urgent_medical` — **user-facing** expectation. |
-| `attendance_confirmation`                     | Single select                | `pending`, `confirmed`, `declined`, `unknown`.                                    |
-| `confirmation_received_at`                    | Date/time                    | From bot or operator.                                                             |
-| `surgery_completed_at`                        | Date/time                    | Triggers recovery messaging.                                                      |
-| `recovery_end_expected`                       | Date                         | For pickup messaging.                                                             |
-| `operator_owner`                              | Collaborator or link         | Optional routing for “human help”.                                                |
-| `last_notified_status`                        | Single line text             | For idempotent notifications (or hash).                                           |
-| `last_notified_at`                            | Date/time                    | Dedup / diagnostics.                                                              |
-| `mute_noncritical`                            | Checkbox                     | If user invoked mute; still send mandatory messages if you define any.            |
-
-
-### 4.3 `Castration_days`
-
-
-| Field                  | Type                                                         |
-| ---------------------- | ------------------------------------------------------------ |
-| `date`                 | Date                                                         |
-| `capacity_slots`       | Number                                                       |
-| `slots_used`           | Number or formula / rollup                                   |
-| `meeting_point`        | Long text                                                    |
-| `default_instructions` | Long text (fasting, carrier — **vet-approved** template IDs) |
-| `active`               | Checkbox                                                     |
-
-
-### 4.4 `Bot_events` (append-only)
-
-
-| Field               | Type                                                                                                      |
-| ------------------- | --------------------------------------------------------------------------------------------------------- |
-| `created_at`        | Created time                                                                                              |
-| `cat_record_id`     | Link to `Cats`                                                                                            |
-| `telegram_user_id`  | Text                                                                                                      |
-| `event_type`        | Single select: `link_success`, `confirm_attend`, `decline_attend`, `choose_slot`, `command_help`, `error` |
-| `payload_json`      | Long text                                                                                                 |
-| `idempotency_key`   | Single line text                                                                                          |
-| `processing_result` | Single select                                                                                             |
-
-
-**Hybrid principle:** conversational nuance stays with operators; **machine-readable events** land in `Bot_events` and selected rollup fields on `Cats` (`attendance_confirmation`, etc.).
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> PutiKD[на пути в кд]
+  PutiKD --> Prinyata[принята в кд]
+  Prinyata --> Ozhidaet[ожидает стерилизацию]
+  Ozhidaet --> NaSter[на стерилизации]
+  NaSter --> Gotova[готова к выписке]
+  Gotova --> Peredana[передана заявителю]
+```
 
 ---
 
-## 5. Telegram UX — commands, linking, notifications
+## 5. Airtable data model and bot integration
 
-### 5.1 Account linking flows
+### 5.1 `sterilization_request` — field groups relevant to the bot
 
-**Primary flow — tokenized `/start`**
+Fields below follow the **`sterilization_main`** schema. **Implementation should use stable field IDs** from the API where possible.
 
-1. On form submission, Airtable automation generates `link_token` + expiry, stores on cat row.
-2. User receives a link: `https://t.me/<YourBot>?start=<token>` (or short code to paste: `/start LINK-AB12CD`).
-3. Bot validates token, binds `telegram_user_id` to exactly one cat row (or to a **household** record if you add that later), clears or invalidates token, sends welcome message with `public_request_id` and cat name.
+**Identifiers and admin**
 
-**Fallback — operator-initiated**
+| Field | Type | Bot notes |
+| ----- | ---- | --------- |
+| **`id`** | Autonumber | Public-facing “request #” candidate (current bot lists this). |
+| **`created_date`** | Date | Submission / creation date. |
+| **`status`** | Single select | §4.1 |
+| **`operator`** | Single select | Lida, Olya, Nata, Mariam, Mari, Nikolaeva, Kotovnik, Alena, Mikhail, Yuliya, Vika, Sasha, MariSigma, Liza |
+| **`steril_date`** | Date | Scheduled sterilisation date — anchor for reminders. |
+| **`sterilized`** | Checkbox | Completed procedure. |
+| **`language`** | Single select | **`ru`**, **`en`**, **`ka`**. |
+| **`notes`** | Long text | Free-form; avoid duplicating sensitive data in Telegram unnecessarily. |
 
-- Operator verifies Telegram username manually, then triggers automation “Send link” or resets `link_token` for the correct row.
+**Requestor / contact**
 
-**Edge cases (product rules)**
+| Field | Type | Bot notes |
+| ----- | ---- | --------- |
+| **`requestor_name`** | Single line text | Display name. |
+| **`telegram`** | Single line text | Match to Telegram username (with/without `@`) — **current bot behaviour**. |
+| **`phone`**, **`whatsapp`**, **`viber`**, **`email`**, **`instagram`** | Various | Alternate contacts for handoff. |
+| **`messengers`** | Multiple select | Preferred channels. |
+| **`requestor_contact`** | Long text | Legacy formatted block. |
+| **`Contacts`** | Formula | Read-only formatted contacts. |
 
-- **Wrong username on form:** linking still works if user has the token; operator can clear bad username field.
-- **Shared device / family:** one Telegram account may link to multiple cats — show **inline list** after `/my_cats`.
-- **Token reuse:** second use after success → polite message “already linked”; support path to add another cat.
-- **Expired token:** instruct user to request new link from operator or self-service resend if you add it later.
+**Location**
 
-### 5.2 Commands and persistent menu (v1)
+| Field | Type | Bot notes |
+| ----- | ---- | --------- |
+| **`address`** | Single line text | Logistics. |
+| **`geo_location`** | Single line text | Map link. |
+| **`district`** | Single select | Tbilisi districts (multilingual options). |
 
+**Cat**
 
-| Command / action           | Behaviour                                                                                   |
-| -------------------------- | ------------------------------------------------------------------------------------------- |
-| `/start <token>`           | Linking flow as above.                                                                      |
-| `/start` (no token)        | Short help + link to web/operator instructions.                                             |
-| `/status`                  | Summarise all linked cats: status bucket, next action, castration day summary if relevant.  |
-| `/cat_<public_request_id>` | Optional: drill into one cat if multiple.                                                   |
-| `/help`                    | Commands, human contact, FAQ links.                                                         |
-| `/language`                | Toggle or set `ka` / `en`. Writes to Airtable if authoritative.                             |
-| `/stop` or `/mute`         | Sets `mute_noncritical` — **must not** block mandatory safety messages (define list in §7). |
+| Field | Type | Bot notes |
+| ----- | ---- | --------- |
+| **`sex`**, **`cat_type`**, **`wild_or_tame`**, **`health`**, **`health_notes`** | Single select / long text | Context for messaging. |
+| **`is_pregnant`**, **`pregnant_notes`** | Single select / long text | Urgency copy. |
+| **`is_deflead`**, **`is_vaccinated`**, **`cat_picture`**, **`Примерный вес кошки`** | Various | Mostly informational for v1. |
 
+**Service preferences**
 
-**Inline keyboards (callbacks)**
+| Field | Type | Bot notes |
+| ----- | ---- | --------- |
+| **`clinic`** | Single select | Named clinics / “no preference”. |
+| **`catch_type`**, **`needs_foster_care`**, **`need_carrier`**, **`return_type`** | Single select / checkbox | Logistics and expectations. |
 
-- **Confirm** / **Cannot attend** when `status` in `{scheduled_batch, scheduled_urgent}` and `attendance_confirmation = pending`.
-- **Optional:** slot choice buttons when `status = offered_slots`.
+**Payment and vaccination (read-heavy for bot)**
 
-### 5.3 Notification matrix (transactional)
+Payment-related fields (**`payment_choice`**, **`is_paid`**, **`pay_for_*`**, vaccination checkboxes and **`vac_payment_*`**) exist in the base. The bot **does not process payments**; it may **surface read-only status** in later phases if product approves.
 
-Events are driven by **Airtable changes** (webhook, polling, or Airtable automation hitting your backend). All sends should be **idempotent** (same state hash → no duplicate).
+### 5.2 Formula / computed fields (read-only)
 
+Examples: **`Contacts`**, **`Нужно вакцинировать?`**, **`payment_calculated`**, **`sex_calculated`**, **`pregnancy_calculated`**, **`vac_payment_calc`**, **`created_year_month`**. The bot may **read** these for display; **writes** go only to editable fields (or extension fields in §5.4).
 
-| Trigger (Airtable signal)               | Audience                                  | Timing                         | Message intent                                                                                |
-| --------------------------------------- | ----------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------- |
-| `status` → `scheduled_batch`            | Requestor                                 | Immediate                      | Assigned date, arrival window, meeting point summary, what to bring, Confirm / Cannot attend. |
-| `status` → `scheduled_urgent`           | Requestor                                 | Immediate                      | Urgency framing, clinic logistics, different expectations from batch day.                     |
-| `attendance_confirmation` → `confirmed` | Requestor                                 | Immediate                      | Acknowledgement + reminder schedule.                                                          |
-| `attendance_confirmation` → `declined`  | Requestor                                 | Immediate                      | Thank you + “we will contact you” + operator alert (internal).                                |
-| Day before castration                   | Requestor linked to that `castration_day` | T−24h (configurable)           | Repeat window + fasting + contact if late.                                                    |
-| Morning of castration                   | Same                                      | T−2h (configurable)            | Last-mile logistics.                                                                          |
-| `status` → `post_op_recovery`           | Requestor                                 | Within X hours of field change | Recovery expectations, emergency line if applicable, mute rules reminder.                     |
-| `status` → `ready_for_pickup`           | Requestor                                 | Immediate                      | Pickup coordination summary.                                                                  |
-| `status` → `completed`                  | Requestor                                 | Immediate                      | Closure + optional one-tap feedback (phase 2).                                                |
+### 5.3 `cat_flat_fostering` — key fields for cross-table UX
 
+| Field | Type | Bot notes |
+| ----- | ---- | --------- |
+| **`request`** | Link to `sterilization_request` | Join key. |
+| **`status`** | Single select | §4.2 |
+| **`in_date`**, **`out_date`** | Date | Stay window. |
+| **`room`**, **`notes_kk`** | Multiple select / long text | Context for in-flat messaging. |
 
-**Quiet hours (optional product setting)**
+Lookups from linked request (contacts, cat details) may exist — use Airtable API metadata to enumerate.
 
-- If local time in Tbilisi is 22:00–08:00, **defer non-urgent** notifications except `scheduled_urgent` and same-day castration reminders inside a defined “always send” window.
+### 5.4 Extensions not in current schema (product / Phase 1b)
 
-### 5.4 Copy and localization
+These support **token linking**, **confirm/decline**, and **idempotent notifications** as described in earlier product discussions. They are **not** documented as present on `sterilization_request` today — add when the base is extended:
 
-- Maintain **parallel message templates** for `ka` and `en` keyed by `(status, event_type)`.
-- **Medical content** (fasting, water, pre-op) must carry **vet-approved** wording; version templates in Airtable or repo with `template_version` field on `Castration_days`.
+- **`telegram_user_id`** (or equivalent) — stable Telegram user id after link.
+- **`link_token`**, **`link_token_expires_at`**, **`linked_at`** — deep-link binding.
+- **`attendance_confirmation`**, **`confirmation_received_at`** — structured confirm/decline.
+- **`last_notified_status`**, **`last_notified_at`** — notification deduplication.
+- **`mute_noncritical`** — respect quiet / education-only mute.
+- **`Bot_events`** (separate table) — append-only audit with **`idempotency_key`**.
 
----
+**Hybrid principle:** chat is not the system of record; structured state lives in Airtable (or **`Bot_events`**) once these exist.
 
-## 6. Scheduling, slots, priority, and waitlist behaviour
-
-### 6.1 Authority model
-
-- **Operators and your org rules** decide **who gets which castration day** and **internal_priority**.
-- The bot **never auto-assigns** a final batch slot from priority alone in v1 unless you explicitly adopt automation later.
-
-### 6.2 Optional “offered slots” flow (nice-to-have v1)
-
-1. Operator sets `status = offered_slots` and links 2–3 candidate `castration_day` options (could be a linked junction table `Slot_offers`).
-2. Bot sends buttons: dates only (no internal rank).
-3. Requestor taps one → writes `Bot_events` + sets `pending_chosen_day` field on `Cats`.
-4. Operator approves → `status = scheduled_batch`, clears pending fields, sends final confirmation.
-
-### 6.3 Simpler v1 (recommended if time-constrained)
-
-- Operator sets `scheduled_batch` directly with date fields populated.
-- Bot only handles **Confirm / Cannot attend** and reminders.
-
-### 6.4 Priority and what requestors see
-
-
-| Internal data                 | Shown to requestor?               |
-| ----------------------------- | --------------------------------- |
-| `internal_priority`           | **No** (default)                  |
-| `requestor_visibility_bucket` | **Yes** — coarse expectation only |
-| Slot order / rank within day  | **No** (default)                  |
-
-
-**Overflow / waitlist**
-
-- When `status = waitlisted`, message template explains **you remain on the list**, **factors are capacity-based**, and **you will be contacted** when a slot opens — **no promise of exact date** unless operator sets a visibility bucket that implies timing.
-
-**Pregnancy exception**
-
-- If `pregnancy_risk` indicates late pregnancy, operator moves cat to `scheduled_urgent` even if a batch day exists soon. Bot copy must **never** imply the cat is on the batch car unless `status = scheduled_batch`.
+**Scheduling note:** There is **no** separate `Castration_days` table in **`sterilization_main`**. Batch-day logistics are represented by **`steril_date`**, **`clinic`**, **`district`**, **`address`**, **`notes`**, and operator process. A dedicated “castration day” table remains a **future** option if operations standardise it.
 
 ---
 
-## 7. Acceptance criteria and operational runbooks
+## 6. Telegram UX — commands, linking, notifications
 
-### 7.1 Acceptance criteria by journey
+### 6.1 Account linking flows
 
-**J1 — Form submission → link**
+**Current behaviour (MVP):** Match **`telegram`** field to the user’s public **Telegram @username** (normalised; with or without `@`). No token yet.
 
-- Given a new cat row with a valid `link_token`, when the user opens `t.me/bot?start=token`, then the bot links `telegram_user_id`, sets `linked_at`, invalidates token, and sends a welcome message containing `public_request_id` and `cat_name` in the user’s `language`.
+**Planned — tokenized `/start`**
 
-**J2 — Status mirror**
+1. On form submission (or in automation), generate **`link_token`** + expiry on the request row (requires §5.4 fields).
+2. User opens `https://t.me/<YourBot>?start=<token>`.
+3. Bot validates token, stores **`telegram_user_id`**, clears token, confirms **`id`** and request context.
 
-- Given a linked cat, when `status` changes in Airtable, then within **N minutes** (define SLA, e.g. 5) the user receives the template for that transition unless `last_notified_status` already equals the new composite `(status, attendance_confirmation)` hash.
+**Fallback:** Operator verifies identity and resets token manually.
 
-**J3 — Confirm attendance**
+### 6.2 Commands and menu (v1 target)
 
-- Given `status ∈ {scheduled_batch, scheduled_urgent}` and `attendance_confirmation = pending`, when the user taps **Confirm**, then Airtable updates to `confirmed`, `confirmation_received_at` is set, a `Bot_events` row is written with unique idempotency key, and the user receives acknowledgement.
 
-**J4 — Cannot attend**
+| Command / action | Behaviour |
+| ------------------ | --------- |
+| `/start` | List requests matching **`telegram`** (current); later tokenised link. |
+| `/status` | Summarise matched requests: **`id`**, **`created_date`**, **`status`**, **`operator`**, and optionally fostering-aware copy when linked rows exist. |
+| `/help` | Human contact and FAQ. |
+| `/language` | Should align with **`language`** field (`ru` / `en` / `ka`) when write-back exists. |
 
-- Given the same preconditions, when the user taps **Cannot attend**, then Airtable updates to `declined`, operator notification channel receives an alert (email/Slack/Telegram internal — implementation choice), and the user receives a calm confirmation message.
+**Inline keyboards (when confirmations exist)**
+
+- Confirm / Cannot attend when **`status`** is **Стерилизация назначена** (or as defined by ops) and attendance fields exist.
+
+### 6.3 Notification matrix (transactional)
+
+Driven by **Airtable changes** (webhooks / polling / automations). All sends should be **idempotent**.
+
+
+| Trigger | Audience | Timing | Message intent |
+| ------- | -------- | ------ | -------------- |
+| **`status` → Стерилизация назначена** | Requestor | Immediate | **`steril_date`**, **`clinic`**, location fields; optional confirm buttons if §5.4 exists. |
+| **`steril_date`** set/changed | Requestor | Immediate | Update + re-confirm if confirmations exist. |
+| Reminder | Requestor | T−24h / T−2h (configurable) vs **`steril_date`** | Logistics, fasting/carrier per **approved** templates. |
+| **`status`** → **На пути в котодом** / **принята в кк** | Requestor | Immediate | Handoff / arrival expectations. |
+| Linked **`cat_flat_fostering.status`** changes | Requestor | If product enables | Recovery / pickup — only for agreed statuses (§11). |
+| **`status`** → **Стерилизация отменена** | Requestor | Immediate | Clear cancellation + support path. |
+
+**Quiet hours (optional):** e.g. 22:00–08:00 Tbilisi; still send same-day critical logistics.
+
+### 6.4 Copy and localization
+
+- Templates keyed by **`language`** (`ru` / `en` / `ka`) and by **`status`** / event type.
+- Medical / pre-op lines require **vet-approved** wording.
+
+---
+
+## 7. Scheduling, logistics, and priority
+
+### 7.1 Authority
+
+- **Operators** set **`steril_date`**, **`clinic`**, **`status`**, and narrative in **`notes`**.
+- The bot does not auto-assign slots from “priority” in v1.
+
+### 7.2 Logistics fields
+
+Use **`steril_date`**, **`district`**, **`address`**, **`geo_location`**, **`clinic`**, **`catch_type`**, **`need_carrier`**, **`return_type`**, and operator **`notes`** for user-facing instructions. There is **no** separate `meeting_point_summary` field — if meeting points live only in **`notes`** or automations, the product should either add a dedicated field later or standardise note templates for parsing.
+
+### 7.3 Waitlist / capacity
+
+- There is **no** dedicated “waitlist” status in the listed `sterilization_request.status` set. Capacity pressure may appear as **Коммуникация с заявителем** or delayed **`steril_date`**. Messaging should stay honest and avoid invented **priority scores** unless Airtable adds them.
+
+### 7.4 Pregnancy
+
+- If **`is_pregnant`** indicates urgency, operators adjust **`clinic`**, **`status`**, and **`notes`**; bot copy must not contradict those fields.
+
+---
+
+## 8. Acceptance criteria and operational runbooks
+
+### 8.1 Acceptance criteria by journey
+
+**J1 — Match by Telegram handle**
+
+- Given **`telegram`** on a row matches the user’s normalised @username, when the user sends `/start`, then the bot returns **`id`**, **`created_date`**, **`status`**, and **`operator`** for all matching rows (current MVP).
+
+**J2 — Token link (when §5.4 exists)**
+
+- Given a valid **`link_token`**, when the user opens `t.me/bot?start=token`, then the bot binds **`telegram_user_id`**, invalidates the token, and confirms **`id`** in the user’s **`language`**.
+
+**J3 — Status mirror**
+
+- When **`status`** (or agreed fostering **`status`**) changes, the user receives the corresponding template within the agreed SLA unless **`last_notified_status`** already matches (if dedup fields exist).
+
+**J4 — Confirm attendance (when §5.4 exists)**
+
+- Given **Стерилизация назначена** and pending attendance, when the user taps Confirm, then **`attendance_confirmation`** / timestamps update and **`Bot_events`** records idempotently.
 
 **J5 — Reminders**
 
-- Given `confirmed` attendance for a `castration_day = D`, when wall-clock hits `D − 24h` in org timezone, then the reminder is sent once per cat per event type (dedup key includes `cat_id` + `reminder_24h`).
+- Given **`steril_date` = D** and confirmations on, reminders fire once per dedup key per milestone (e.g. `id` + `reminder_24h`).
 
-**J6 — Urgent path**
+**J6 — Pregnancy / urgency**
 
-- Given `status = scheduled_urgent`, when any reminder fires, then copy **must not** reference batch meeting point unless `meeting_point_summary` explicitly tagged for urgent clinic.
+- Messaging respects **`is_pregnant`** / **`pregnant_notes`** and does not imply batch logistics when **`clinic`** / **`notes`** indicate a different path.
 
-**J7 — Multi-cat**
+**J7 — Multi-request**
 
-- Given one `telegram_user_id` linked to multiple open cats, when the user sends `/status`, then the bot returns a numbered list with distinct `public_request_id` lines and next action for each.
+- One Telegram user can match multiple **`sterilization_request`** rows; `/status` lists each **`id`** clearly.
 
 **J8 — Mute**
 
-- Given `mute_noncritical = true`, when a non-critical template would fire, then it is suppressed; when a **mandatory** template fires (same-day logistics, urgent path assignment, cancellation), it is still delivered.
+- If **`mute_noncritical`** exists and is set, non-critical templates are suppressed; cancellations and same-day logistics still send.
 
-### 7.2 Operational runbooks
+### 8.2 Operational runbooks
 
-**R1 — Telegram delivery failures**
+- **Delivery failures:** log; if user blocked the bot, flag for operator follow-up via phone (**`phone`** field).
+- **Duplicate callbacks:** **`Bot_events`** idempotency when implemented.
+- **Airtable outage:** queue or retry; alert ops.
+- **Wrong link:** operator clears binding fields and reissues token (when present).
+- **Staging:** separate base or restricted chat allowlist; never send test traffic to real requestors.
 
-- Monitor failed sends; if user blocked bot, set a `delivery_blocked` flag on cat via webhook error and surface to operator in Airtable view “Contact via phone”.
+### 8.3 Human handoff
 
-**R2 — Duplicate callbacks**
-
-- Telegram may retry; `Bot_events.idempotency_key` UNIQUE → second insert ignored; user still receives “already recorded” if needed.
-
-**R3 — Airtable API outage**
-
-- Queue outbound notifications; backoff; after max age, alert ops and optionally mark `notification_backlog` on row.
-
-**R4 — Wrong person linked**
-
-- Operator runs “Reset link” → clears `telegram_user_id`, issues new `link_token`, audit note.
-
-**R5 — Staging / dry-run**
-
-- Separate Airtable base or prefix `public_request_id` with `TEST-`; bot uses environment flag to restrict sends to allowlisted chat IDs.
-
-### 7.3 Human handoff
-
-- Every critical screen includes **“Contact us”** with a **single tap** (`tg://user?id=...` or `https://t.me/operator_handle`) or phone link, per org policy.
-- Operators maintain a short **FAQ** page linked from `/help`.
+- **`operator`** assignment is visible in Airtable; bot copy should offer **phone** / **telegram** escalation paths per org policy.
 
 ---
 
-## 8. Security and privacy appendix
+## 9. Security and privacy appendix
 
-### 8.1 Data minimization in chat
+### 9.1 Data minimization in chat
 
-- Prefer **public_request_id** over full name + address in the same message where feasible; never post **full residential address** unless operationally necessary and consent-covered — prefer meeting point for batch days.
+- Prefer referencing **`id`** over dumping full **`address`** in every message; include location details when needed for attendance.
 
-### 8.2 Retention
+### 9.2 Retention
 
-- Define retention for `telegram_user_id` and `Bot_events` after `completed` (e.g. 12–24 months for impact reporting, or delete on request).
+- Define retention for Telegram identifiers and **`Bot_events`** after request closure.
 
-### 8.3 Access control
+### 9.3 Access control
 
-- Airtable personal access token or OAuth app with **least privilege** scopes.
-- Secrets in environment variables; rotate on volunteer offboarding.
+- Least-privilege Airtable token; rotate on volunteer offboarding.
 
-### 8.4 Mandatory vs mutable messages
+### 9.4 Mandatory vs mutable messages
 
-- **Mandatory (example):** same-day castration window changes, cancellation, urgent reassignment.
-- **Mutable / respect mute:** general education, non-urgent tips.
+- Mandatory: same-day logistics, cancellation, safety-critical updates.
+- Mutable: education; respect mute when implemented.
 
-### 8.5 Abuse and safety
+### 9.5 Abuse prevention
 
-- Rate-limit `/start` attempts per chat.
-- Log suspicious token brute-force (many failures from one `telegram_user_id`).
+- Rate-limit token attempts; monitor brute-force patterns.
 
 ---
 
-## 9. Phased roadmap
+## 10. Phased roadmap
 
 
-| Phase                     | Scope                                                                                                                        |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Phase 0 — Spec freeze** | Lock enums, fields, message templates with vet sign-off for medical lines.                                                   |
-| **Phase 1 — MVP**         | Linking, `/status`, status-driven notifications, confirm/decline, reminders, urgent branch copy, operator alerts on decline. |
-| **Phase 1.5**             | Offered-slots flow + `Slot_offers` table if needed.                                                                          |
-| **Phase 2**               | Multi-language polish, pickup scheduling UI, satisfaction survey, analytics dashboard.                                       |
-| **Phase 3**               | Optional operator Telegram tools **only if** demand proven.                                                                  |
+| Phase | Scope |
+| ----- | ----- |
+| **Phase 0** | Lock message templates; vet sign-off for medical lines; confirm field IDs. |
+| **Phase 1 — MVP** | Match by **`telegram`**; list **`id`**, **`created_date`**, **`status`**, **`operator`**; optional notifications from **`status`** / **`steril_date`**. |
+| **Phase 1b** | Add §5.4 fields + **`Bot_events`**; token linking; confirm/decline; deduped reminders. |
+| **Phase 2** | Fostering-aware copy; richer **`cat_flat_fostering`** triggers; analytics. |
+| **Phase 3** | Operator tools in Telegram only if justified. |
 
 
 ---
 
-## 10. Open decisions checklist (workshop)
+## 11. Open decisions checklist
 
-- Final Georgian copy deck + tone guidelines  
-- Exact fasting rules per clinic / vet letter  
-- Whether `scheduled_urgent` cats always use flat recovery or sometimes direct return home  
-- SLA for “Airtable change → Telegram delivery”  
-- Operator alert channel for declines  
-- Legal basis and consent text on the intake form for Telegram messaging
+- Final copy deck per **`language`** (`ru` / `en` / `ka`).
+- Fasting / pre-op rules per **`clinic`** (vet sign-off).
+- Which **`cat_flat_fostering.status`** values trigger requestor notifications.
+- SLA: Airtable change → Telegram delivery.
+- Operator alert channel for declines / errors.
+- Legal basis and consent on the intake form for Telegram messaging.
+- Confirm **field IDs** via Airtable Metadata API for stable integrations.
 
 ---
 
-*End of PRD — ready for engineering spike (Airtable automation + bot framework choice) after sign-off.*
+*End of PRD — aligned to **`sterilization_main`** / **`sterilization_request`**; extension fields in §5.4 are roadmap items until added to the base.*
