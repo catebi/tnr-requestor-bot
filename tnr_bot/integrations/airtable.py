@@ -60,3 +60,50 @@ async def fetch_matching_records(normalized_username: str) -> list[dict[str, Any
                 break
 
     return out
+
+
+async def fetch_record_by_id(record_id: str) -> dict[str, Any] | None:
+    """Return one record by Airtable record id (rec…), or None if 404."""
+    pat, base_id = get_airtable_credentials()
+    if not pat or not base_id:
+        raise RuntimeError("Airtable credentials are not configured")
+
+    headers = {"Authorization": f"Bearer {pat}"}
+    url = f"{AIRTABLE_API}/{base_id}/{STERILIZATION_TABLE}/{record_id}"
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.get(url, headers=headers)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+
+
+def extract_telegram_chat_id(fields: dict[str, Any]) -> int | None:
+    """Read numeric telegram_chat_id from Airtable fields (number or string)."""
+    raw = fields.get("telegram_chat_id")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+async def resolve_telegram_chat_id_for_notify(
+    record: dict[str, Any], normalized_handle: str
+) -> int | None:
+    """
+    Prefer chat_id on this record; else any matching row by handle with telegram_chat_id set.
+    """
+    fields = record.get("fields") or {}
+    cid = extract_telegram_chat_id(fields)
+    if cid is not None:
+        return cid
+
+    matches = await fetch_matching_records(normalized_handle)
+    for m in matches:
+        cid = extract_telegram_chat_id(m.get("fields") or {})
+        if cid is not None:
+            return cid
+    return None

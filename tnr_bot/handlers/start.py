@@ -9,7 +9,9 @@ from telegram import Update
 from telegram.constants import MessageLimit
 from telegram.ext import ContextTypes
 
+from tnr_bot.chat_store import remember_chat_id
 from tnr_bot.integrations.airtable import fetch_matching_records
+from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records, sync_chat_id_enabled
 from tnr_bot.utils.formatting import build_summary_text
 from tnr_bot.utils.telegram_identity import normalize_handle
 
@@ -30,6 +32,7 @@ async def reply_with_matching_requests(update: Update) -> None:
         return
 
     normalized = normalize_handle(username)
+    remember_chat_id(normalized, update.effective_chat.id)
 
     try:
         records = await fetch_matching_records(normalized)
@@ -50,6 +53,16 @@ async def reply_with_matching_requests(update: Update) -> None:
             f"Check that the form’s telegram field matches this handle (with or without @)."
         )
         return
+
+    if sync_chat_id_enabled():
+        chat_id = update.effective_chat.id
+        try:
+            await patch_telegram_chat_id_on_records([r["id"] for r in records], chat_id)
+        except Exception:
+            logger.exception(
+                "Could not sync telegram_chat_id to Airtable (check SYNC_TELEGRAM_CHAT_ID, "
+                "PAT write scope, and telegram_chat_id field)"
+            )
 
     text = build_summary_text(records, compact=False)
     if len(text) > MessageLimit.MAX_TEXT_LENGTH:

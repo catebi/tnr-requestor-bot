@@ -48,8 +48,58 @@ Copy `.env.example` to `.env` and set the values you need.
 | `WEBHOOK_LISTEN` | Bind address (default `0.0.0.0`) |
 | `PORT` | Listen port for the webhook server (default `8080`) |
 | `WEBHOOK_SECRET` | Optional Telegram webhook secret token |
+| `NOTIFY_WEBHOOK_SECRET` | Secret for `POST /notify/airtable` (Airtable automation → notify server) |
+| `NOTIFY_HOST` / `NOTIFY_PORT` | Bind for uvicorn notify app (default `127.0.0.1` / `8080`) |
+| `TELEGRAM_CHAT_STORE_PATH` | Optional absolute path to the shared handle→chat_id JSON store (default `.telegram_chat_store.json` in cwd) |
+| `SYNC_TELEGRAM_CHAT_ID` | `true` to save `telegram_chat_id` on `/start` (needs Airtable write + field) |
 
 For local development, **long polling** is enough: leave `BOT_TRANSPORT` unset or set it to `polling`. For production behind HTTPS, use **webhooks** and configure your reverse proxy to forward traffic to the process `WEBHOOK_LISTEN` / `PORT`.
+
+### Notify webhook (new record → Telegram DM)
+
+When a **`sterilization_request`** row is created, you can call a small **FastAPI** app that sends the requestor a Telegram message (same summary as `/start`: `id`, `created_date`, `status`, `operator`).
+
+**Telegram rule:** the user must have pressed **`/start`** (or **`/myrequests`**) at least once so the bot can save their numeric chat id. The bot writes **`handle → chat_id`** to a local JSON file (`.telegram_chat_store.json` in the process working directory, or set **`TELEGRAM_CHAT_STORE_PATH`** to a fixed absolute path). The notify server reads the same file, so **run both processes from the same directory** (or point both at the same `TELEGRAM_CHAT_STORE_PATH`). Optionally also add **`telegram_chat_id`** in Airtable and **`SYNC_TELEGRAM_CHAT_ID`** for persistence in the base (see below).
+
+| Variable | Description |
+|----------|-------------|
+| `NOTIFY_WEBHOOK_SECRET` | Shared secret; required for `POST /notify/airtable`. Send as header `X-Notify-Secret` or JSON field `secret`. |
+| `NOTIFY_HOST` / `NOTIFY_PORT` | Bind address for the notify server (defaults `127.0.0.1` and `8080`). |
+| `SYNC_TELEGRAM_CHAT_ID` | If `true`, `/start` and `/myrequests` PATCH matching rows with `telegram_chat_id` (needs PAT **write** + field on table). |
+
+**Airtable base:** add a **Number** (or single-line text) field **`telegram_chat_id`** on `sterilization_request` if you use `SYNC_TELEGRAM_CHAT_ID=true`.
+
+**Run the notify server locally (second terminal):**
+
+```bash
+# from repo root, venv active, .env loaded
+uvicorn tnr_bot.notify_app:app --host "${NOTIFY_HOST:-127.0.0.1}" --port "${NOTIFY_PORT:-8080}"
+```
+
+**Expose HTTPS for Airtable (ngrok):**
+
+1. Install [ngrok](https://ngrok.com/) and run: `ngrok http 8080` (or your `NOTIFY_PORT`).
+2. Copy the **https://…** forwarding URL (changes each run on free tier).
+3. In **Airtable → Automations**, trigger on record created in `sterilization_request`, action **Webhook** or **Run script** that `POST`s JSON, for example:
+
+   `{"recordId": "<Airtable record id>", "secret": "<NOTIFY_WEBHOOK_SECRET>"}`
+
+   to `https://<ngrok-host>/notify/airtable`
+
+   Prefer sending `X-Notify-Secret` as a header instead of body `secret` when the automation supports it.
+
+4. Health check: `GET https://<ngrok-host>/health`
+
+**curl test:**
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/notify/airtable" \
+  -H "Content-Type: application/json" \
+  -H "X-Notify-Secret: $NOTIFY_WEBHOOK_SECRET" \
+  -d '{"record_id":"recXXXXXXXX"}'
+```
+
+**Airtable Automation script:** copy [`scripts/airtable_automation_notify.js`](scripts/airtable_automation_notify.js) into the Automation **Run script** action, then add the three inputs it expects (`recordId`, `notifyBaseUrl`, `webhookSecret`) and map `recordId` from the trigger’s record id.
 
 ## Airtable
 
@@ -71,6 +121,10 @@ The code lives in the **`tnr_bot`** package:
 | `tnr_bot/utils/` | Formatting and small helpers |
 | `tnr_bot/runtime/transport.py` | Polling vs webhook startup |
 | `tnr_bot/app.py` | Application factory and `main()` |
+| `tnr_bot/notify_app.py` | FastAPI webhook for Airtable → Telegram (run with uvicorn) |
+| `tnr_bot/chat_store.py` | Local JSON map handle→`chat_id` shared by bot and notify server |
+| `tnr_bot/integrations/airtable_write.py` | Optional PATCH `telegram_chat_id` |
+| `tnr_bot/integrations/telegram_api.py` | Outbound `sendMessage` for notify path |
 
 See `PRD.md` for broader product notes (status flows, future features).
 
