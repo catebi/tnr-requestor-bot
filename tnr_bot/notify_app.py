@@ -16,6 +16,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from tnr_bot.integrations.airtable import (
+    fetch_matching_records_missing_telegram_chat_id,
     fetch_record_by_id,
     resolve_telegram_chat_id_for_notify,
 )
@@ -103,13 +104,31 @@ async def notify_airtable(
 
     await send_message(chat_id, text)
 
+    backfill_count = 0
     try:
-        await patch_telegram_chat_id_on_records([record_id], chat_id)
+        need_chat_id = await fetch_matching_records_missing_telegram_chat_id(normalized)
+        ids_to_fix = [r["id"] for r in need_chat_id if r.get("id")]
+        if not ids_to_fix:
+            ids_to_fix = [record_id]
+        ok = await patch_telegram_chat_id_on_records(ids_to_fix, chat_id)
+        if ok:
+            backfill_count = len(ids_to_fix)
+            if backfill_count > 1:
+                logger.info(
+                    "Set telegram_chat_id on %s row(s) for handle=%s (same user, field was blank)",
+                    backfill_count,
+                    normalized,
+                )
     except Exception:
-        logger.exception("PATCH telegram_chat_id after notify send failed")
+        logger.exception("PATCH telegram_chat_id after notify (backfill same-handle rows) failed")
 
     _recent_notify_times[record_id] = now
     if len(_recent_notify_times) > 5000:
         _recent_notify_times.clear()
 
-    return {"status": "sent", "record_id": record_id, "chat_id": chat_id}
+    return {
+        "status": "sent",
+        "record_id": record_id,
+        "chat_id": chat_id,
+        "telegram_chat_id_rows_patched": backfill_count,
+    }

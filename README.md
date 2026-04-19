@@ -57,7 +57,7 @@ For local development, **long polling** is enough: leave `BOT_TRANSPORT` unset o
 
 ### Notify webhook (new record → Telegram DM)
 
-When a **`sterilization_request`** row is created, you can call a small **FastAPI** app that sends the requestor a Telegram message (same summary as `/start`: `id`, `created_date`, `status`, `operator`).
+When a **`sterilization_request`** row is created or updated (e.g. **`telegram`** filled), you can call a small **FastAPI** app that sends the requestor a Telegram message (same summary as `/start`: `id`, `created_date`, `status`, `operator`).
 
 **Telegram rule:** the notify server can only DM users when it can resolve a numeric **`telegram_chat_id`**. **`/start`** and **`/myrequests`** PATCH that id into Airtable for every matching row; the webhook reads it from this record or from another row for the same handle. Without **`telegram_chat_id`** populated (user never matched `/start` or write failed), notify skips sending.
 
@@ -67,6 +67,8 @@ When a **`sterilization_request`** row is created, you can call a small **FastAP
 | `NOTIFY_HOST` / `NOTIFY_PORT` | Bind address for the notify server (defaults `127.0.0.1` and `8080`). |
 
 On **`/start`** and **`/myrequests`**, **all** `sterilization_request` records that match the user’s handle (same formula as the listing) are updated with their Telegram numeric chat id—not only a single row. If there are **no** matching rows, nothing is written to Airtable.
+
+After a successful notify **`sendMessage`**, the webhook also PATCHes **`telegram_chat_id`** on **every** row for that same Telegram handle where **`telegram_chat_id`** is still empty (so older rows for the same user get filled in one go). The JSON response includes **`telegram_chat_id_rows_patched`** (count of rows in that PATCH batch).
 
 **Airtable base:** add a **Single line text** field **`telegram_chat_id`** on `sterilization_request` (the bot PATCHes the numeric chat id as a string). If PATCH returns **422**, check the field name and type.
 

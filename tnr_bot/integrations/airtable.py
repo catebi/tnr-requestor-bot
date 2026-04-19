@@ -57,12 +57,66 @@ def filter_by_telegram_formula(normalized_username: str) -> str:
     )
 
 
+def filter_by_telegram_and_empty_chat_id_formula(normalized_username: str) -> str:
+    """
+    Same handle match as :func:`filter_by_telegram_formula`, but only rows where ``telegram_chat_id`` is empty.
+    """
+    esc = escape_airtable_formula_string(normalized_username)
+    return (
+        "AND("
+        "{telegram} != '', "
+        "LOWER(TRIM(SUBSTITUTE({telegram}, '@', ''))) = "
+        f"'{esc}', "
+        "OR("
+        "{telegram_chat_id} = BLANK(), "
+        "LEN(TRIM({telegram_chat_id} & \"\")) = 0"
+        ")"
+        ")"
+    )
+
+
 async def fetch_matching_records(normalized_username: str) -> list[dict[str, Any]]:
     pat, base_id = get_airtable_credentials()
     if not pat or not base_id:
         raise RuntimeError("Airtable credentials are not configured")
 
     formula = filter_by_telegram_formula(normalized_username)
+    headers = {"Authorization": f"Bearer {pat}"}
+    out: list[dict[str, Any]] = []
+    offset: str | None = None
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        while True:
+            params: dict[str, str | int] = {
+                "filterByFormula": formula,
+                "pageSize": 100,
+            }
+            if offset:
+                params["offset"] = offset
+
+            url = sterilization_table_url(base_id)
+            r = await client.get(url, headers=headers, params=params)
+            r.raise_for_status()
+            data = r.json()
+            out.extend(data.get("records", []))
+            offset = data.get("offset")
+            if not offset:
+                break
+
+    return out
+
+
+async def fetch_matching_records_missing_telegram_chat_id(
+    normalized_username: str,
+) -> list[dict[str, Any]]:
+    """
+    Rows for this Telegram handle where ``telegram_chat_id`` is blank (for notify backfill).
+    """
+    pat, base_id = get_airtable_credentials()
+    if not pat or not base_id:
+        raise RuntimeError("Airtable credentials are not configured")
+
+    formula = filter_by_telegram_and_empty_chat_id_formula(normalized_username)
     headers = {"Authorization": f"Bearer {pat}"}
     out: list[dict[str, Any]] = []
     offset: str | None = None
