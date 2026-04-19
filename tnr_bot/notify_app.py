@@ -19,7 +19,6 @@ from tnr_bot.integrations.airtable import (
     fetch_record_by_id,
     resolve_telegram_chat_id_for_notify,
 )
-from tnr_bot.chat_store import get_remembered_chat_id
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records, sync_chat_id_enabled
 from tnr_bot.integrations.telegram_api import send_message
 from tnr_bot.utils.formatting import build_notify_new_request_message
@@ -93,8 +92,6 @@ async def notify_airtable(
 
     normalized = normalize_handle(str(telegram_raw).strip())
     chat_id = await resolve_telegram_chat_id_for_notify(record, normalized)
-    if chat_id is None:
-        chat_id = get_remembered_chat_id(normalized)
     if chat_id is None:
         logger.info(
             "No telegram_chat_id for handle=%s (user may not have /start the bot yet)",

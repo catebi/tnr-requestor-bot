@@ -9,7 +9,6 @@ from telegram import Update
 from telegram.constants import MessageLimit
 from telegram.ext import ContextTypes
 
-from tnr_bot.chat_store import remember_chat_id
 from tnr_bot.integrations.airtable import fetch_matching_records
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records, sync_chat_id_enabled
 from tnr_bot.utils.formatting import build_summary_text_auto_compact
@@ -32,7 +31,6 @@ async def reply_with_matching_requests(update: Update) -> None:
         return
 
     normalized = normalize_handle(username)
-    remember_chat_id(normalized, update.effective_chat.id)
 
     try:
         records = await fetch_matching_records(normalized)

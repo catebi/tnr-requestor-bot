@@ -50,7 +50,6 @@ Copy `.env.example` to `.env` and set the values you need.
 | `WEBHOOK_SECRET` | Optional Telegram webhook secret token |
 | `NOTIFY_WEBHOOK_SECRET` | Secret for `POST /notify/airtable` (Airtable automation → notify server) |
 | `NOTIFY_HOST` / `NOTIFY_PORT` | Bind for uvicorn notify app (default `127.0.0.1` / `8080`) |
-| `TELEGRAM_CHAT_STORE_PATH` | Optional absolute path to the shared handle→chat_id JSON store (default `.telegram_chat_store.json` in cwd) |
 | `SYNC_TELEGRAM_CHAT_ID` | `true` to save `telegram_chat_id` on `/start` and `/myrequests` (needs Airtable write + field) |
 | `AIRTABLE_TELEGRAM_CHAT_ID_AS_STRING` | `true` (default) sends the chat id as a string for **Single line text** fields; set `false` if `telegram_chat_id` is a **Number** column and the API rejects strings |
 
@@ -60,7 +59,7 @@ For local development, **long polling** is enough: leave `BOT_TRANSPORT` unset o
 
 When a **`sterilization_request`** row is created, you can call a small **FastAPI** app that sends the requestor a Telegram message (same summary as `/start`: `id`, `created_date`, `status`, `operator`).
 
-**Telegram rule:** the user must have pressed **`/start`** (or **`/myrequests`**) at least once so the bot can save their numeric chat id. The bot writes **`handle → chat_id`** to a local JSON file (`.telegram_chat_store.json` in the process working directory, or set **`TELEGRAM_CHAT_STORE_PATH`** to a fixed absolute path). The notify server reads the same file, so **run both processes from the same directory** (or point both at the same `TELEGRAM_CHAT_STORE_PATH`). Optionally also add **`telegram_chat_id`** in Airtable and **`SYNC_TELEGRAM_CHAT_ID`** for persistence in the base (see below).
+**Telegram rule:** the notify server can only DM users when it can resolve a numeric **`telegram_chat_id`**. Enable **`SYNC_TELEGRAM_CHAT_ID`** so **`/start`** / **`/myrequests`** writes that id into Airtable for every matching row; the webhook then reads it from the same record or from another row for the same handle. Without **`telegram_chat_id`** in the base, notify will skip sending until the user has synced at least once.
 
 | Variable | Description |
 |----------|-------------|
@@ -125,7 +124,6 @@ The code lives in the **`tnr_bot`** package:
 | `tnr_bot/runtime/transport.py` | Polling vs webhook startup |
 | `tnr_bot/app.py` | Application factory and `main()` |
 | `tnr_bot/notify_app.py` | FastAPI webhook for Airtable → Telegram (run with uvicorn) |
-| `tnr_bot/chat_store.py` | Local JSON map handle→`chat_id` shared by bot and notify server |
 | `tnr_bot/integrations/airtable_write.py` | Optional PATCH `telegram_chat_id` |
 | `tnr_bot/integrations/telegram_api.py` | Outbound `sendMessage` for notify path |
 
