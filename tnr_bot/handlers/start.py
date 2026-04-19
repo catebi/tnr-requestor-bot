@@ -12,7 +12,7 @@ from telegram.ext import ContextTypes
 from tnr_bot.chat_store import remember_chat_id
 from tnr_bot.integrations.airtable import fetch_matching_records
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records, sync_chat_id_enabled
-from tnr_bot.utils.formatting import build_summary_text
+from tnr_bot.utils.formatting import build_summary_text_auto_compact
 from tnr_bot.utils.telegram_identity import normalize_handle
 
 logger = logging.getLogger(__name__)
@@ -69,9 +69,7 @@ async def reply_with_matching_requests(update: Update) -> None:
                 "PAT write scope, and telegram_chat_id field)"
             )
 
-    text = build_summary_text(records, compact=False)
-    if len(text) > MessageLimit.MAX_TEXT_LENGTH:
-        text = build_summary_text(records, compact=True)
+    text = build_summary_text_auto_compact(records)
 
     if len(text) <= MessageLimit.MAX_TEXT_LENGTH:
         await update.message.reply_text(text)
@@ -83,9 +81,5 @@ async def reply_with_matching_requests(update: Update) -> None:
         await update.message.reply_text(part)
 
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await reply_with_matching_requests(update)
-
-
-async def myrequests_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_or_myrequests_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_with_matching_requests(update)

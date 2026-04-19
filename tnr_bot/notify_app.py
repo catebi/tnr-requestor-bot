@@ -12,7 +12,6 @@ import os
 import time
 from typing import Any
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,10 +22,8 @@ from tnr_bot.integrations.airtable import (
 from tnr_bot.chat_store import get_remembered_chat_id
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records, sync_chat_id_enabled
 from tnr_bot.integrations.telegram_api import send_message
-from tnr_bot.utils.formatting import build_summary_text
+from tnr_bot.utils.formatting import build_notify_new_request_message
 from tnr_bot.utils.telegram_identity import normalize_handle
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -105,13 +102,11 @@ async def notify_airtable(
         )
         return {"status": "skipped_no_chat_id", "record_id": record_id}
 
-    text = "New sterilization request:\n\n" + build_summary_text([record], compact=False)
-    if len(text) > 4096:
-        text = "New sterilization request:\n\n" + build_summary_text([record], compact=True)
+    text = build_notify_new_request_message(record)
 
-    await send_message(chat_id, text[:4096])
+    await send_message(chat_id, text)
 
-    if sync_chat_id_enabled() and chat_id is not None:
+    if sync_chat_id_enabled():
         try:
             await patch_telegram_chat_id_on_records([record_id], chat_id)
         except Exception:

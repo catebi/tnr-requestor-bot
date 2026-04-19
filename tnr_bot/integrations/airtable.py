@@ -12,6 +12,16 @@ AIRTABLE_API = "https://api.airtable.com/v0"
 STERILIZATION_TABLE = "sterilization_request"
 
 
+def sterilization_table_url(base_id: str) -> str:
+    """Collection URL for list and PATCH on ``sterilization_request``."""
+    return f"{AIRTABLE_API}/{base_id}/{STERILIZATION_TABLE}"
+
+
+def sterilization_record_url(base_id: str, record_id: str) -> str:
+    """Single-record URL (GET one row by ``rec…`` id)."""
+    return f"{sterilization_table_url(base_id)}/{record_id}"
+
+
 def escape_airtable_formula_string(s: str) -> str:
     """Escape single quotes for Airtable formula string literals."""
     return s.replace("'", "''")
@@ -50,7 +60,7 @@ async def fetch_matching_records(normalized_username: str) -> list[dict[str, Any
             if offset:
                 params["offset"] = offset
 
-            url = f"{AIRTABLE_API}/{base_id}/{STERILIZATION_TABLE}"
+            url = sterilization_table_url(base_id)
             r = await client.get(url, headers=headers, params=params)
             r.raise_for_status()
             data = r.json()
@@ -69,7 +79,7 @@ async def fetch_record_by_id(record_id: str) -> dict[str, Any] | None:
         raise RuntimeError("Airtable credentials are not configured")
 
     headers = {"Authorization": f"Bearer {pat}"}
-    url = f"{AIRTABLE_API}/{base_id}/{STERILIZATION_TABLE}/{record_id}"
+    url = sterilization_record_url(base_id, record_id)
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.get(url, headers=headers)

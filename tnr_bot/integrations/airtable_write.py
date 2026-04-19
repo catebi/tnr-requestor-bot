@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from tnr_bot.config import get_airtable_credentials
-from tnr_bot.integrations.airtable import AIRTABLE_API, STERILIZATION_TABLE
+from tnr_bot.integrations.airtable import sterilization_table_url
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ async def patch_telegram_chat_id_on_records(record_ids: list[str], chat_id: int)
     if not pat or not base_id:
         raise RuntimeError("Airtable credentials are not configured")
 
-    url = f"{AIRTABLE_API}/{base_id}/{STERILIZATION_TABLE}"
+    url = sterilization_table_url(base_id)
     headers = {
         "Authorization": f"Bearer {pat}",
         "Content-Type": "application/json",
