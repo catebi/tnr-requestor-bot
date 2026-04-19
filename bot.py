@@ -219,19 +219,19 @@ def _run_application(app: Application, transport: str) -> None:
         return
 
     if transport in ("webhook", "hooks"):
-        webhook_url_raw = os.environ.get("WEBHOOK_URL", "").strip()
+        webhook_url_raw = os.getenv("WEBHOOK_URL", "").strip()
         if not webhook_url_raw:
             raise SystemExit("WEBHOOK_URL is required when BOT_TRANSPORT=webhook")
 
         url_path, webhook_url = _parse_webhook_url(webhook_url_raw)
-        listen = os.environ.get("WEBHOOK_LISTEN", "0.0.0.0").strip() or "0.0.0.0"
-        port_str = os.environ.get("PORT", "8080").strip() or "8080"
+        listen = os.getenv("WEBHOOK_LISTEN", "0.0.0.0").strip() or "0.0.0.0"
+        port_str = os.getenv("PORT", "8080").strip() or "8080"
         try:
             port = int(port_str)
         except ValueError as exc:
             raise SystemExit("PORT must be an integer") from exc
 
-        secret_token = os.environ.get("WEBHOOK_SECRET")
+        secret_token = os.getenv("WEBHOOK_SECRET")
         if secret_token is not None:
             secret_token = secret_token.strip() or None
 
@@ -259,7 +259,7 @@ def _run_application(app: Application, transport: str) -> None:
 
 
 def main() -> None:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
     if not AIRTABLE_PAT or not AIRTABLE_BASE_ID:
@@ -271,7 +271,7 @@ def main() -> None:
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start_cmd))
 
-    transport = os.environ.get("BOT_TRANSPORT", "polling")
+    transport = os.getenv("BOT_TRANSPORT", "polling")
     _run_application(app, transport)
 
 
