@@ -90,7 +90,7 @@ async def fetch_record_by_id(record_id: str) -> dict[str, Any] | None:
 
 
 def extract_telegram_chat_id(fields: dict[str, Any]) -> int | None:
-    """Read numeric telegram_chat_id from Airtable fields (number or string)."""
+    """Read telegram_chat_id from Airtable (Single line text in the base); parse to int for Telegram API."""
     raw = fields.get("telegram_chat_id")
     if raw is None or raw == "":
         return None

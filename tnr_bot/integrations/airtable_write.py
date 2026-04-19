@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 import httpx
@@ -12,22 +11,6 @@ from tnr_bot.config import get_airtable_credentials
 from tnr_bot.integrations.airtable import sterilization_table_url
 
 logger = logging.getLogger(__name__)
-
-
-def sync_chat_id_enabled() -> bool:
-    return os.getenv("SYNC_TELEGRAM_CHAT_ID", "").strip().lower() in ("1", "true", "yes")
-
-
-def _patch_telegram_chat_id_value(chat_id: int) -> int | str:
-    """
-    Airtable field type must match: Single line text expects a string; Number expects a number.
-    Default is string (text columns are common). Set AIRTABLE_TELEGRAM_CHAT_ID_AS_STRING=false
-    if your column is a Number field and rejects string values.
-    """
-    v = os.getenv("AIRTABLE_TELEGRAM_CHAT_ID_AS_STRING", "true").strip().lower()
-    if v in ("0", "false", "no"):
-        return chat_id
-    return str(chat_id)
 
 
 async def patch_telegram_chat_id_on_records(record_ids: list[str], chat_id: int) -> bool:
@@ -51,7 +34,8 @@ async def patch_telegram_chat_id_on_records(record_ids: list[str], chat_id: int)
         "Content-Type": "application/json",
     }
 
-    field_value = _patch_telegram_chat_id_value(chat_id)
+    # Stored as Single line text in Airtable; API expects a string.
+    field_value = str(chat_id)
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         for i in range(0, len(record_ids), 10):
@@ -64,9 +48,8 @@ async def patch_telegram_chat_id_on_records(record_ids: list[str], chat_id: int)
             r = await client.patch(url, headers=headers, json=body)
             if r.status_code == 422:
                 logger.warning(
-                    "Airtable PATCH failed (field telegram_chat_id or value type). "
-                    "Use a Single line text or Number column; if INVALID_VALUE_FOR_COLUMN, set "
-                    "AIRTABLE_TELEGRAM_CHAT_ID_AS_STRING=true (text) or false (number). Response: %s",
+                    "Airtable PATCH failed: add a Single line text field telegram_chat_id (value sent "
+                    "as string) or check PAT scope. Response: %s",
                     r.text,
                 )
                 return False

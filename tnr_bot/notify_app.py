@@ -19,7 +19,7 @@ from tnr_bot.integrations.airtable import (
     fetch_record_by_id,
     resolve_telegram_chat_id_for_notify,
 )
-from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records, sync_chat_id_enabled
+from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
 from tnr_bot.integrations.telegram_api import send_message
 from tnr_bot.utils.formatting import build_notify_new_request_message
 from tnr_bot.utils.telegram_identity import normalize_handle
@@ -103,11 +103,10 @@ async def notify_airtable(
 
     await send_message(chat_id, text)
 
-    if sync_chat_id_enabled():
-        try:
-            await patch_telegram_chat_id_on_records([record_id], chat_id)
-        except Exception:
-            logger.exception("Optional PATCH telegram_chat_id on notify send failed")
+    try:
+        await patch_telegram_chat_id_on_records([record_id], chat_id)
+    except Exception:
+        logger.exception("PATCH telegram_chat_id after notify send failed")
 
     _recent_notify_times[record_id] = now
     if len(_recent_notify_times) > 5000:

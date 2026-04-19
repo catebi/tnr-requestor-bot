@@ -10,7 +10,7 @@ from telegram.constants import MessageLimit
 from telegram.ext import ContextTypes
 
 from tnr_bot.integrations.airtable import fetch_matching_records
-from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records, sync_chat_id_enabled
+from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
 from tnr_bot.utils.formatting import build_summary_text_auto_compact
 from tnr_bot.utils.telegram_identity import normalize_handle
 
@@ -52,20 +52,18 @@ async def reply_with_matching_requests(update: Update) -> None:
         )
         return
 
-    if sync_chat_id_enabled():
-        chat_id = update.effective_chat.id
-        try:
-            synced = await patch_telegram_chat_id_on_records([r["id"] for r in records], chat_id)
-            if synced:
-                logger.info(
-                    "Synced telegram_chat_id to %s matching sterilization_request row(s)",
-                    len(records),
-                )
-        except Exception:
-            logger.exception(
-                "Could not sync telegram_chat_id to Airtable (check SYNC_TELEGRAM_CHAT_ID, "
-                "PAT write scope, and telegram_chat_id field)"
+    chat_id = update.effective_chat.id
+    try:
+        synced = await patch_telegram_chat_id_on_records([r["id"] for r in records], chat_id)
+        if synced:
+            logger.info(
+                "Synced telegram_chat_id to %s matching sterilization_request row(s)",
+                len(records),
             )
+    except Exception:
+        logger.exception(
+            "Could not sync telegram_chat_id to Airtable (check PAT write scope and telegram_chat_id field)"
+        )
 
     text = build_summary_text_auto_compact(records)
 

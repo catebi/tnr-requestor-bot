@@ -264,7 +264,7 @@ Contains volunteer duty assignments. This is a **synced table** (read-only from 
 | **volunteer**        | Single line text | Volunteer identifier                                                              |
 | **name**             | Single line text | Volunteer name                                                                    |
 | **date**             | Date             | Duty date                                                                         |
-| **telegram_chat_id** | Number           | Telegram chat ID for notifications                                                |
+| **telegram_chat_id** | Single line text | Telegram chat ID for notifications (digits as text)                             |
 | **type**             | Single select    | Duty type: cleaning, cleaning_catloft, medical, steril_acceptance, steril_release |
 | **duty_key**         | Formula          | Key for matching with treatments                                                  |
 | **TreatmentDays 3**  | Linked record    | Link to assigned treatments                                                       |
