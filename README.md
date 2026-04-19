@@ -50,6 +50,8 @@ Copy `.env.example` to `.env` and set the values you need.
 | `WEBHOOK_SECRET` | Optional Telegram webhook secret token |
 | `NOTIFY_WEBHOOK_SECRET` | Secret for `POST /notify/airtable` (Airtable automation → notify server) |
 | `NOTIFY_HOST` / `NOTIFY_PORT` | Bind for uvicorn notify app (default `127.0.0.1` / `8080`) |
+| `OPERATORS_MATCH_FIELD` | Field on Airtable table **`operators`** that matches the **`operator`** single-select label on `sterilization_request` (default `name`) |
+| `OPERATORS_TELEGRAM_FIELD` | Field on **`operators`** with the operator’s Telegram @handle (default `telegram`) |
 
 For local development, **long polling** is enough: leave `BOT_TRANSPORT` unset or set it to `polling`. For production behind HTTPS, use **webhooks** and configure your reverse proxy to forward traffic to the process `WEBHOOK_LISTEN` / `PORT`.
 
@@ -102,9 +104,11 @@ curl -sS -X POST "http://127.0.0.1:8080/notify/airtable" \
 
 ## Airtable
 
-The bot reads the table **`sterilization_request`**. On `/start`, it finds rows where the field **`telegram`** matches the user’s Telegram username, ignoring case and an optional leading `@`.
+The bot reads the table **`sterilization_request`**. On **`/start`** and **`/myrequests`**, it finds rows where the field **`telegram`** matches the user’s Telegram username, ignoring case and an optional leading `@`.
 
 It replies with these fields for each match: **`id`**, **`created_date`**, **`status`**, **`operator`**.
+
+**`/contact`** uses the same matching requests. If **no** request has an **`operator`** assigned, the bot says so and suggests contacting **`@religofsil`**. If at least one request has an **`operator`**, the bot loads the **`operators`** table in the same base, matches the assignee label to **`OPERATORS_MATCH_FIELD`** (default **`name`**), and shows each request’s **id**, **status**, and the operator’s Telegram handle from **`OPERATORS_TELEGRAM_FIELD`** (default **`telegram`**). Rows without an assignee are listed as “not assigned yet”; if an assignee has no row or no handle in **`operators`**, the bot says the directory has no Telegram handle for that name.
 
 Users must have a **public Telegram username** set in Telegram settings; otherwise the bot cannot match the form.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
@@ -10,6 +11,21 @@ from tnr_bot.config import get_airtable_credentials
 
 AIRTABLE_API = "https://api.airtable.com/v0"
 STERILIZATION_TABLE = "sterilization_request"
+OPERATORS_TABLE = "operators"
+
+
+def operators_match_field() -> str:
+    """Field on ``operators`` that matches ``sterilization_request.operator`` (single select label)."""
+    return os.getenv("OPERATORS_MATCH_FIELD", "operator_name").strip() or "operator_name"
+
+
+def operators_telegram_field() -> str:
+    """Field on ``operators`` holding the operator’s Telegram @handle."""
+    return os.getenv("OPERATORS_TELEGRAM_FIELD", "telegram").strip() or "telegram"
+
+
+def operators_table_url(base_id: str) -> str:
+    return f"{AIRTABLE_API}/{base_id}/{OPERATORS_TABLE}"
 
 
 def sterilization_table_url(base_id: str) -> str:
@@ -117,3 +133,32 @@ async def resolve_telegram_chat_id_for_notify(
         if cid is not None:
             return cid
     return None
+
+
+async def fetch_all_operator_records() -> list[dict[str, Any]]:
+    """
+    All rows from ``operators`` (paginated). Used to map operator assignment labels to Telegram handles.
+    """
+    pat, base_id = get_airtable_credentials()
+    if not pat or not base_id:
+        raise RuntimeError("Airtable credentials are not configured")
+
+    headers = {"Authorization": f"Bearer {pat}"}
+    url = operators_table_url(base_id)
+    out: list[dict[str, Any]] = []
+    offset: str | None = None
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        while True:
+            params: dict[str, str | int] = {"pageSize": 100}
+            if offset:
+                params["offset"] = offset
+            r = await client.get(url, headers=headers, params=params)
+            r.raise_for_status()
+            data = r.json()
+            out.extend(data.get("records", []))
+            offset = data.get("offset")
+            if not offset:
+                break
+
+    return out
