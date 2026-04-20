@@ -13,15 +13,9 @@ AIRTABLE_API = "https://api.airtable.com/v0"
 STERILIZATION_TABLE = "sterilization_request"
 OPERATORS_TABLE = "operators"
 
-
-def operators_match_field() -> str:
-    """Field on ``operators`` that matches ``sterilization_request.operator`` (single select label)."""
-    return os.getenv("OPERATORS_MATCH_FIELD", "operator_name").strip() or "operator_name"
-
-
-def operators_telegram_field() -> str:
-    """Field on ``operators`` holding the operator’s Telegram @handle."""
-    return os.getenv("OPERATORS_TELEGRAM_FIELD", "telegram").strip() or "telegram"
+# Fixed field names on the ``operators`` table (not configurable).
+OPERATORS_MATCH_FIELD = "operator_name"
+OPERATORS_TELEGRAM_FIELD = "telegram"
 
 
 def operators_table_url(base_id: str) -> str:

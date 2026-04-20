@@ -13,8 +13,6 @@ from telegram.ext import ContextTypes
 from tnr_bot.integrations.airtable import (
     fetch_all_operator_records,
     fetch_matching_records,
-    operators_match_field,
-    operators_telegram_field,
     sterilization_created_field,
     sterilization_language_field,
 )
@@ -100,11 +98,7 @@ async def contact_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(t("error.generic", locale))
         return
 
-    directory = build_operator_directory(
-        operator_records,
-        match_field=operators_match_field(),
-        telegram_field=operators_telegram_field(),
-    )
+    directory = build_operator_directory(operator_records)
     body = format_contact_list_text(records, directory, locale=locale)
     text = t("contact.header", locale) + body
 

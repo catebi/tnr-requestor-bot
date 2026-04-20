@@ -19,8 +19,6 @@ from tnr_bot.integrations.airtable import (
     fetch_all_operator_records,
     fetch_matching_records_missing_telegram_chat_id,
     fetch_record_by_id,
-    operators_match_field,
-    operators_telegram_field,
     resolve_telegram_chat_id_for_notify,
     sterilization_language_field,
 )
@@ -182,11 +180,7 @@ async def notify_airtable(
     operator_directory: OperatorDirectory | None = None
     try:
         op_recs = await fetch_all_operator_records()
-        operator_directory = build_operator_directory(
-            op_recs,
-            match_field=operators_match_field(),
-            telegram_field=operators_telegram_field(),
-        )
+        operator_directory = build_operator_directory(op_recs)
     except Exception:
         logger.warning("Could not load operators table for notify operator labels", exc_info=True)
 

@@ -4,6 +4,8 @@ Telegram bot for a TNR sterilisation programme. It helps people who submitted th
 
 User-facing messages use **English**, **Russian**, or **Georgian** (`en`, `ru`, `ka`). When the user has matching **`sterilization_request`** rows, the bot reads **`language`** from the **latest** row (by **`created_date`**, configurable) and prefers that over the Telegram app language; otherwise it falls back to Telegram, then English. **`/language`** updates **`language`** on every matching row. The notify webhook picks language in this order: JSON **`locale`** → Airtable **`language`** on the notified row → **`NOTIFY_DEFAULT_LOCALE`**.
 
+**`status` in messages:** single-select values are translated for display using [`tnr_bot/locale/field_display.py`](tnr_bot/locale/field_display.py); map keys must match the **exact** strings in Airtable (see PRD §4.1). **`operator`** display names come from fixed fields on **`operators`**: **`operator_name_en`**, **`operator_name_ru`**, **`operator_name_ka`**, with fallback to **`operator_name`** when a localized cell is empty. Matching and formulas still use stored **`sterilization_request.operator`** and **`operators.telegram`** values unchanged.
+
 ## Requirements
 
 - Python 3.10 or newer
@@ -55,8 +57,6 @@ Copy `.env.example` to `.env` and set the values you need.
 | `NOTIFY_DEFAULT_LOCALE` | Default language for notify DMs when JSON `locale` and Airtable `language` are absent: `en`, `ru`, or `ka` (default `en`) |
 | `AIRTABLE_LANGUAGE_FIELD` | Field on **`sterilization_request`** for preferred locale (default `language`; values `en` / `ru` / `ka`) |
 | `AIRTABLE_CREATED_FIELD` | Date/time field used to find the “latest” request (default `created_date`) |
-| `OPERATORS_MATCH_FIELD` | Field on Airtable table **`operators`** that matches the **`operator`** single-select label on `sterilization_request` (default `name`) |
-| `OPERATORS_TELEGRAM_FIELD` | Field on **`operators`** with the operator’s Telegram @handle (default `telegram`) |
 
 For local development, **long polling** is enough: leave `BOT_TRANSPORT` unset or set it to `polling`. For production behind HTTPS, use **webhooks** and configure your reverse proxy to forward traffic to the process `WEBHOOK_LISTEN` / `PORT`.
 
@@ -132,7 +132,7 @@ Add a **`language`** field (single line text or single select) with allowed valu
 
 It replies with these fields for each match: **`id`**, **`created_date`**, **`status`**, **`operator`**.
 
-**`/contact`** uses the same matching requests. If **no** request has an **`operator`** assigned, the bot says so and suggests contacting **`@religofsil`**. If at least one request has an **`operator`**, the bot loads the **`operators`** table in the same base, matches the assignee label to **`OPERATORS_MATCH_FIELD`** (default **`name`**), and shows each request’s **id**, **status**, and the operator’s Telegram handle from **`OPERATORS_TELEGRAM_FIELD`** (default **`telegram`**). Rows without an assignee are listed as “not assigned yet”; if an assignee has no row or no handle in **`operators`**, the bot says the directory has no Telegram handle for that name.
+**`/contact`** uses the same matching requests. If **no** request has an **`operator`** assigned, the bot says so and suggests contacting **`@religofsil`**. If at least one request has an **`operator`**, the bot loads the **`operators`** table (matching **`operator_name`** to the request’s **`operator`** value), and shows **id**, **status**, localized operator names (**`operator_name_en`** / **`_ru`** / **`_ka`** by user locale), and Telegram (**`telegram`**). Rows without an assignee are listed as “not assigned yet”; if an assignee has no row or no handle in **`operators`**, the bot says the directory has no Telegram handle for that name.
 
 Users must have a **public Telegram username** set in Telegram settings; otherwise the bot cannot match the form.
 
@@ -143,6 +143,7 @@ The code lives in the **`tnr_bot`** package:
 | Area | Role |
 |------|------|
 | `tnr_bot/config.py` | Environment and credentials |
+| `tnr_bot/locale/field_display.py` | Display-only translations for `status` labels |
 | `tnr_bot/integrations/airtable.py` | Airtable API and query formulas |
 | `tnr_bot/handlers/` | Command handlers; register new ones in `handlers/register.py` |
 | `tnr_bot/utils/` | Formatting and small helpers |

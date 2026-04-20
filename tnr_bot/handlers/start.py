@@ -12,8 +12,6 @@ from telegram.ext import ContextTypes
 from tnr_bot.integrations.airtable import (
     fetch_all_operator_records,
     fetch_matching_records,
-    operators_match_field,
-    operators_telegram_field,
     sterilization_created_field,
     sterilization_language_field,
 )
@@ -82,11 +80,7 @@ async def reply_with_matching_requests(update: Update) -> None:
     operator_directory = None
     try:
         op_recs = await fetch_all_operator_records()
-        operator_directory = build_operator_directory(
-            op_recs,
-            match_field=operators_match_field(),
-            telegram_field=operators_telegram_field(),
-        )
+        operator_directory = build_operator_directory(op_recs)
     except Exception:
         logger.warning("Could not load operators table for /start listing operator names", exc_info=True)
 

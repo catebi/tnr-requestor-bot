@@ -7,15 +7,35 @@ from typing import Any
 
 from telegram.constants import MessageLimit
 
+from tnr_bot.integrations.airtable import OPERATORS_MATCH_FIELD, OPERATORS_TELEGRAM_FIELD
 from tnr_bot.locale import t
+from tnr_bot.locale.field_display import STATUS_FIELD, display_field_value
+
+
+def _unwrap_airtable_cell(value: Any) -> Any:
+    """
+    Airtable may return single-select cells as ``{state, value, isStale, ...}``.
+    Reduce to the scalar ``value`` for display and matching.
+    """
+    if isinstance(value, dict) and "value" in value:
+        inner = value.get("value")
+        if isinstance(inner, dict):
+            return _unwrap_airtable_cell(inner)
+        if inner is not None:
+            return inner
+    return value
 
 
 def format_field(value: Any) -> str:
     if value is None:
         return "—"
+    value = _unwrap_airtable_cell(value)
+    if value is None:
+        return "—"
     if isinstance(value, list):
         parts: list[str] = []
         for item in value:
+            item = _unwrap_airtable_cell(item)
             if isinstance(item, dict):
                 parts.append(item.get("name") or item.get("email") or str(item))
             else:
@@ -61,6 +81,11 @@ def _operator_field_rec_ids(raw: Any) -> list[str]:
 # When no operator is assigned on any request, point users here (exact handle per product).
 CONTACT_FALLBACK_TELEGRAM = "@religofsil"
 
+# Fixed ``operators`` table fields for localized display names (not configurable).
+OPERATOR_FIELD_NAME_EN = "operator_name_en"
+OPERATOR_FIELD_NAME_RU = "operator_name_ru"
+OPERATOR_FIELD_NAME_KA = "operator_name_ka"
+
 
 @dataclass(frozen=True)
 class OperatorDirectory:
@@ -70,43 +95,111 @@ class OperatorDirectory:
     """Operator row id ``rec…`` -> ``@handle``."""
 
     label_by_record_id: dict[str, str]
-    """Operator row id -> display name (``OPERATORS_MATCH_FIELD``)."""
+    """Operator row id -> canonical match label (``operator_name`` on ``operators``)."""
 
     telegram_by_label: dict[str, str]
     """Lowercased single-select label -> ``@handle`` (when ``operator`` is not a link)."""
 
+    localized_by_record_id: dict[str, dict[str, str]]
+    """Operator row id -> ``en`` / ``ru`` / ``ka`` display strings from ``operators``."""
+
+    localized_by_label_casefold: dict[str, dict[str, str]]
+    """Lowercased single-select label -> per-locale display strings (same source)."""
+
+
+def _operator_row_localized_names(
+    fields: dict[str, Any],
+) -> dict[str, str]:
+    """Build ``en``/``ru``/``ka`` strings; empty localized cells fall back to ``operator_name``."""
+    base = str(_unwrap_airtable_cell(fields.get(OPERATORS_MATCH_FIELD)) or "").strip()
+    out: dict[str, str] = {}
+    for loc, fname in (
+        ("en", OPERATOR_FIELD_NAME_EN),
+        ("ru", OPERATOR_FIELD_NAME_RU),
+        ("ka", OPERATOR_FIELD_NAME_KA),
+    ):
+        raw = _unwrap_airtable_cell(fields.get(fname))
+        if raw is not None and str(raw).strip():
+            out[loc] = str(raw).strip()
+        elif base:
+            out[loc] = base
+        else:
+            out[loc] = "—"
+    return out
+
 
 def build_operator_directory(
     operator_records: list[dict[str, Any]],
-    *,
-    match_field: str,
-    telegram_field: str,
 ) -> OperatorDirectory:
-    """Build lookups from all rows in the ``operators`` table."""
+    """Build lookups from all rows in the ``operators`` table (fixed field names in ``airtable``)."""
     by_rec_tg: dict[str, str] = {}
     by_rec_lbl: dict[str, str] = {}
     by_lbl_tg: dict[str, str] = {}
+    by_rec_loc: dict[str, dict[str, str]] = {}
+    by_lbl_loc: dict[str, dict[str, str]] = {}
 
     for rec in operator_records:
         rid = rec.get("id")
         if not rid or not isinstance(rid, str):
             continue
         fields = rec.get("fields") or {}
-        label = fields.get(match_field)
-        raw_tg = fields.get(telegram_field)
+        label = _unwrap_airtable_cell(fields.get(OPERATORS_MATCH_FIELD))
+        raw_tg = fields.get(OPERATORS_TELEGRAM_FIELD)
         tg = _normalize_telegram_handle(raw_tg)
         if tg:
             by_rec_tg[rid] = tg
         if label is not None and str(label).strip():
-            by_rec_lbl[rid] = str(label).strip()
+            canon = str(label).strip()
+            by_rec_lbl[rid] = canon
             if tg:
-                by_lbl_tg[str(label).strip().casefold()] = tg
+                by_lbl_tg[canon.casefold()] = tg
+            loc_row = _operator_row_localized_names(fields)
+            by_rec_loc[rid] = loc_row
+            by_lbl_loc[canon.casefold()] = loc_row
 
     return OperatorDirectory(
         telegram_by_record_id=by_rec_tg,
         label_by_record_id=by_rec_lbl,
         telegram_by_label=by_lbl_tg,
+        localized_by_record_id=by_rec_loc,
+        localized_by_label_casefold=by_lbl_loc,
     )
+
+
+def get_operator_display_name(
+    directory: OperatorDirectory | None,
+    locale: str,
+    *,
+    record_id: str | None = None,
+    raw_single_select_label: str | None = None,
+) -> str:
+    """
+    User-facing operator name for ``locale`` using ``operators`` localized columns.
+
+    Matching on ``sterilization_request`` still uses the canonical single-select / link; this only affects display.
+    """
+    from tnr_bot.locale import normalize_locale
+
+    loc = normalize_locale(locale)
+    if directory is None:
+        return format_field(raw_single_select_label) if raw_single_select_label is not None else "—"
+
+    if record_id:
+        row = directory.localized_by_record_id.get(record_id)
+        if row:
+            return row.get(loc) or row.get("en") or directory.label_by_record_id.get(record_id) or record_id
+        return directory.label_by_record_id.get(record_id) or record_id
+
+    if raw_single_select_label is None:
+        return "—"
+    raw_single_select_label = _unwrap_airtable_cell(raw_single_select_label)
+    s = str(raw_single_select_label).strip()
+    if not s:
+        return "—"
+    row = directory.localized_by_label_casefold.get(s.casefold())
+    if row:
+        return row.get(loc) or row.get("en") or s
+    return s
 
 
 def format_operator_for_summary_line(
@@ -127,13 +220,13 @@ def format_operator_for_summary_line(
             return t("summary.operator_linked_fallback", locale)
         parts: list[str] = []
         for oid in rec_ids:
-            label = directory.label_by_record_id.get(oid)
-            parts.append(label if label else oid)
+            parts.append(get_operator_display_name(directory, locale, record_id=oid))
         return ", ".join(parts) if parts else "—"
+    raw = _unwrap_airtable_cell(raw)
     s = str(raw).strip()
     if not s:
         return "—"
-    return format_field(raw)
+    return get_operator_display_name(directory, locale, raw_single_select_label=s)
 
 
 def build_summary_text(
@@ -157,13 +250,13 @@ def build_summary_text(
         if compact:
             blocks.append(
                 f"{i}. {lbl_id}={format_field(rec_id)} | {lbl_cd}={format_field(fields.get('created_date'))} | "
-                f"{lbl_st}={format_field(fields.get('status'))} | {lbl_op}={op_disp}"
+                f"{lbl_st}={display_field_value(STATUS_FIELD, fields.get('status'), locale)} | {lbl_op}={op_disp}"
             )
         else:
             line = (
                 f"{i}. {lbl_id}: {format_field(rec_id)}\n"
                 f"   {lbl_cd}: {format_field(fields.get('created_date'))}\n"
-                f"   {lbl_st}: {format_field(fields.get('status'))}\n"
+                f"   {lbl_st}: {display_field_value(STATUS_FIELD, fields.get('status'), locale)}\n"
                 f"   {lbl_op}: {op_disp}"
             )
             blocks.append(line)
@@ -198,37 +291,58 @@ def format_contact_list_text(
     for rec in records:
         fields = rec.get("fields") or {}
         rid = format_field(_record_display_id(rec))
-        status = format_field(fields.get("status"))
+        status = display_field_value(STATUS_FIELD, fields.get("status"), locale)
         op_raw = fields.get("operator")
 
         rec_ids = _operator_field_rec_ids(op_raw)
         if rec_ids:
             parts: list[str] = []
             for orid in rec_ids:
-                name = directory.label_by_record_id.get(orid) or op_placeholder
+                if orid not in directory.label_by_record_id:
+                    name_disp = op_placeholder
+                else:
+                    name_disp = get_operator_display_name(directory, locale, record_id=orid)
                 tg = directory.telegram_by_record_id.get(orid)
                 if tg:
-                    parts.append(f"{name} {tg}")
+                    parts.append(f"{name_disp} {tg}")
                 else:
-                    parts.append(t("contact.part_no_telegram", locale, name=name))
+                    parts.append(t("contact.part_no_telegram", locale, name=name_disp))
             lines.append(
                 t("contact.line_linked", locale, rid=rid, status=status, parts=" · ".join(parts))
             )
             continue
 
         # Single select or plain text label
-        if op_raw is None or not str(op_raw).strip():
+        if op_raw is None:
             lines.append(t("contact.operator_not_assigned", locale, rid=rid, status=status))
             continue
-        label = str(op_raw).strip()
+        op_unwrapped = _unwrap_airtable_cell(op_raw)
+        if op_unwrapped is None or not str(op_unwrapped).strip():
+            lines.append(t("contact.operator_not_assigned", locale, rid=rid, status=status))
+            continue
+        label = str(op_unwrapped).strip()
         tg = directory.telegram_by_label.get(label.casefold())
+        label_disp = get_operator_display_name(directory, locale, raw_single_select_label=label)
         if tg:
             lines.append(
-                t("contact.line_label_tg", locale, rid=rid, status=status, label=label, tg=tg)
+                t(
+                    "contact.line_label_tg",
+                    locale,
+                    rid=rid,
+                    status=status,
+                    label=label_disp,
+                    tg=tg,
+                )
             )
         else:
             lines.append(
-                t("contact.no_handle_directory", locale, rid=rid, status=status, label=label)
+                t(
+                    "contact.no_handle_directory",
+                    locale,
+                    rid=rid,
+                    status=status,
+                    label=label_disp,
+                )
             )
     return "\n".join(lines)
 
