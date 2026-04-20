@@ -16,16 +16,23 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from tnr_bot.integrations.airtable import (
+    fetch_all_operator_records,
     fetch_matching_records_missing_telegram_chat_id,
     fetch_record_by_id,
+    operators_match_field,
+    operators_telegram_field,
     resolve_telegram_chat_id_for_notify,
+    sterilization_language_field,
 )
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
 from tnr_bot.integrations.telegram_api import send_message
+from tnr_bot.locale import default_notify_locale, locale_from_airtable_value, normalize_locale
 from tnr_bot.utils.formatting import (
+    OperatorDirectory,
     build_notify_new_request_message,
     build_notify_operator_assigned_message,
     build_notify_status_changed_message,
+    build_operator_directory,
 )
 from tnr_bot.utils.telegram_identity import normalize_handle
 
@@ -68,6 +75,21 @@ class NotifyBody(BaseModel):
         description="new_request | operator_assigned | status_changed (aliases: notify_type)",
     )
     notify_type: str | None = Field(None, description="Alias for event")
+    locale: str | None = Field(
+        None,
+        description="Message language: en | ru | ka (overrides Airtable language + NOTIFY_DEFAULT_LOCALE)",
+    )
+
+
+def _notify_locale(payload: NotifyBody, record: dict[str, Any]) -> str:
+    if payload.locale is not None and str(payload.locale).strip():
+        return normalize_locale(str(payload.locale).strip())
+    fields = record.get("fields") or {}
+    raw = fields.get(sterilization_language_field())
+    at = locale_from_airtable_value(raw)
+    if at is not None:
+        return at
+    return default_notify_locale()
 
 
 def _get_record_id(payload: NotifyBody) -> str:
@@ -81,12 +103,24 @@ def _get_notify_event(payload: NotifyBody) -> NotifyEvent:
     return _normalize_notify_event(payload.event or payload.notify_type)
 
 
-def _build_message_for_event(record: dict[str, Any], event: NotifyEvent) -> str:
+def _build_message_for_event(
+    record: dict[str, Any],
+    event: NotifyEvent,
+    operator_directory: OperatorDirectory | None,
+    *,
+    locale: str,
+) -> str:
     if event == "operator_assigned":
-        return build_notify_operator_assigned_message(record)
+        return build_notify_operator_assigned_message(
+            record, operator_directory=operator_directory, locale=locale
+        )
     if event == "status_changed":
-        return build_notify_status_changed_message(record)
-    return build_notify_new_request_message(record)
+        return build_notify_status_changed_message(
+            record, operator_directory=operator_directory, locale=locale
+        )
+    return build_notify_new_request_message(
+        record, operator_directory=operator_directory, locale=locale
+    )
 
 
 @app.get("/health")
@@ -145,7 +179,19 @@ async def notify_airtable(
         )
         return {"status": "skipped_no_chat_id", "record_id": record_id, "event": event}
 
-    text = _build_message_for_event(record, event)
+    operator_directory: OperatorDirectory | None = None
+    try:
+        op_recs = await fetch_all_operator_records()
+        operator_directory = build_operator_directory(
+            op_recs,
+            match_field=operators_match_field(),
+            telegram_field=operators_telegram_field(),
+        )
+    except Exception:
+        logger.warning("Could not load operators table for notify operator labels", exc_info=True)
+
+    loc = _notify_locale(payload, record)
+    text = _build_message_for_event(record, event, operator_directory, locale=loc)
 
     await send_message(chat_id, text)
 

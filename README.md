@@ -2,6 +2,8 @@
 
 Telegram bot for a TNR sterilisation programme. It helps people who submitted the intake form see their **sterilisation requests** by matching their **public Telegram @username** to the `telegram` field in Airtable.
 
+User-facing messages use **English**, **Russian**, or **Georgian** (`en`, `ru`, `ka`). When the user has matching **`sterilization_request`** rows, the bot reads **`language`** from the **latest** row (by **`created_date`**, configurable) and prefers that over the Telegram app language; otherwise it falls back to Telegram, then English. **`/language`** updates **`language`** on every matching row. The notify webhook picks language in this order: JSON **`locale`** → Airtable **`language`** on the notified row → **`NOTIFY_DEFAULT_LOCALE`**.
+
 ## Requirements
 
 - Python 3.10 or newer
@@ -50,6 +52,9 @@ Copy `.env.example` to `.env` and set the values you need.
 | `WEBHOOK_SECRET` | Optional Telegram webhook secret token |
 | `NOTIFY_WEBHOOK_SECRET` | Secret for `POST /notify/airtable` (Airtable automation → notify server) |
 | `NOTIFY_HOST` / `NOTIFY_PORT` | Bind for uvicorn notify app (default `127.0.0.1` / `8080`) |
+| `NOTIFY_DEFAULT_LOCALE` | Default language for notify DMs when JSON `locale` and Airtable `language` are absent: `en`, `ru`, or `ka` (default `en`) |
+| `AIRTABLE_LANGUAGE_FIELD` | Field on **`sterilization_request`** for preferred locale (default `language`; values `en` / `ru` / `ka`) |
+| `AIRTABLE_CREATED_FIELD` | Date/time field used to find the “latest” request (default `created_date`) |
 | `OPERATORS_MATCH_FIELD` | Field on Airtable table **`operators`** that matches the **`operator`** single-select label on `sterilization_request` (default `name`) |
 | `OPERATORS_TELEGRAM_FIELD` | Field on **`operators`** with the operator’s Telegram @handle (default `telegram`) |
 
@@ -65,6 +70,7 @@ When a **`sterilization_request`** row is created or updated (e.g. **`telegram`*
 |----------|-------------|
 | `NOTIFY_WEBHOOK_SECRET` | Shared secret; required for `POST /notify/airtable`. Send as header `X-Notify-Secret` or JSON field `secret`. |
 | `NOTIFY_HOST` / `NOTIFY_PORT` | Bind address for the notify server (defaults `127.0.0.1` and `8080`). |
+| `NOTIFY_DEFAULT_LOCALE` | `en`, `ru`, or `ka` only when the webhook body has no **`locale`** and the row’s **`language`** field is empty or unknown. |
 
 On **`/start`** and **`/myrequests`**, **all** `sterilization_request` records that match the user’s handle (same formula as the listing) are updated with their Telegram numeric chat id—not only a single row. If there are **no** matching rows, nothing is written to Airtable.
 
@@ -97,6 +103,8 @@ uvicorn tnr_bot.notify_app:app --host "${NOTIFY_HOST:-127.0.0.1}" --port "${NOTI
 
    Example: `{"recordId":"rec…","event":"status_changed"}`
 
+   Optional **`locale`**: `en`, `ru`, or `ka` (overrides Airtable **`language`** and **`NOTIFY_DEFAULT_LOCALE`**). Example: `{"recordId":"rec…","locale":"ru"}`.
+
    to `https://<ngrok-host>/notify/airtable`
 
    Prefer sending `X-Notify-Secret` as a header instead of body `secret` when the automation supports it.
@@ -120,6 +128,8 @@ curl -sS -X POST "http://127.0.0.1:8080/notify/airtable" \
 
 The bot reads the table **`sterilization_request`**. On **`/start`** and **`/myrequests`**, it finds rows where the field **`telegram`** matches the user’s Telegram username, ignoring case and an optional leading `@`.
 
+Add a **`language`** field (single line text or single select) with allowed values **`en`**, **`ru`**, **`ka`** so the form and bot agree. The bot uses the latest row’s **`language`** (see **`AIRTABLE_CREATED_FIELD`**) for message wording when set.
+
 It replies with these fields for each match: **`id`**, **`created_date`**, **`status`**, **`operator`**.
 
 **`/contact`** uses the same matching requests. If **no** request has an **`operator`** assigned, the bot says so and suggests contacting **`@religofsil`**. If at least one request has an **`operator`**, the bot loads the **`operators`** table in the same base, matches the assignee label to **`OPERATORS_MATCH_FIELD`** (default **`name`**), and shows each request’s **id**, **status**, and the operator’s Telegram handle from **`OPERATORS_TELEGRAM_FIELD`** (default **`telegram`**). Rows without an assignee are listed as “not assigned yet”; if an assignee has no row or no handle in **`operators`**, the bot says the directory has no Telegram handle for that name.
@@ -139,7 +149,7 @@ The code lives in the **`tnr_bot`** package:
 | `tnr_bot/runtime/transport.py` | Polling vs webhook startup |
 | `tnr_bot/app.py` | Application factory and `main()` |
 | `tnr_bot/notify_app.py` | FastAPI webhook for Airtable → Telegram (run with uvicorn) |
-| `tnr_bot/integrations/airtable_write.py` | Optional PATCH `telegram_chat_id` |
+| `tnr_bot/integrations/airtable_write.py` | PATCH `telegram_chat_id` and `language` |
 | `tnr_bot/integrations/telegram_api.py` | Outbound `sendMessage` for notify path |
 
 See `PRD.md` for broader product notes (status flows, future features).

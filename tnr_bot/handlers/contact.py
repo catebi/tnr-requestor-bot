@@ -15,7 +15,10 @@ from tnr_bot.integrations.airtable import (
     fetch_matching_records,
     operators_match_field,
     operators_telegram_field,
+    sterilization_created_field,
+    sterilization_language_field,
 )
+from tnr_bot.locale import locale_from_telegram_language, resolve_effective_locale, t
 from tnr_bot.utils.formatting import (
     CONTACT_FALLBACK_TELEGRAM,
     build_operator_directory,
@@ -44,40 +47,45 @@ async def contact_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if update.effective_user is None or update.message is None:
         return
 
+    tg_lang = update.effective_user.language_code
     username = update.effective_user.username
     if not username:
-        await update.message.reply_text(
-            "Set a public Telegram username in Settings so we can match your sterilization "
-            "form. Then send /contact again."
-        )
+        loc = locale_from_telegram_language(tg_lang)
+        await update.message.reply_text(t("error.need_public_username_contact", loc))
         return
 
     normalized = normalize_handle(username)
+    lang_f = sterilization_language_field()
+    created_f = sterilization_created_field()
 
     try:
-        records = await fetch_matching_records(normalized)
+        records = await fetch_matching_records(normalized, sort_newest_first=True)
     except httpx.HTTPStatusError as e:
         logger.exception("Airtable HTTP error: %s", e.response.text)
         await update.message.reply_text(
-            "Could not reach the database. Check server configuration and try again later."
+            t("error.airtable_unavailable", locale_from_telegram_language(tg_lang))
         )
         return
     except Exception:
         logger.exception("Unexpected error while fetching Airtable records")
-        await update.message.reply_text("Something went wrong. Try again later.")
+        await update.message.reply_text(t("error.generic", locale_from_telegram_language(tg_lang)))
         return
 
+    locale = resolve_effective_locale(
+        tg_lang,
+        records,
+        language_field=lang_f,
+        created_field=created_f,
+        records_newest_first=True,
+    )
+
     if not records:
-        await update.message.reply_text(
-            f"No sterilization requests found for @{username}. "
-            f"Check that the form’s telegram field matches this handle (with or without @)."
-        )
+        await update.message.reply_text(t("no_requests", locale, username=username))
         return
 
     if not _any_operator_assigned(records):
         await update.message.reply_text(
-            "No operator is assigned to your requests yet. "
-            f"For questions, please write to {CONTACT_FALLBACK_TELEGRAM}."
+            t("contact.no_operator_yet", locale, fallback=CONTACT_FALLBACK_TELEGRAM)
         )
         return
 
@@ -85,13 +93,11 @@ async def contact_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         operator_records = await fetch_all_operator_records()
     except httpx.HTTPStatusError as e:
         logger.exception("Airtable operators table HTTP error: %s", e.response.text)
-        await update.message.reply_text(
-            "Could not load the operators directory. Try again later."
-        )
+        await update.message.reply_text(t("error.operators_unavailable", locale))
         return
     except Exception:
         logger.exception("Unexpected error while fetching operators table")
-        await update.message.reply_text("Something went wrong. Try again later.")
+        await update.message.reply_text(t("error.generic", locale))
         return
 
     directory = build_operator_directory(
@@ -99,8 +105,8 @@ async def contact_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         match_field=operators_match_field(),
         telegram_field=operators_telegram_field(),
     )
-    body = format_contact_list_text(records, directory)
-    text = "Here are your requests and operator contacts on Telegram:\n\n" + body
+    body = format_contact_list_text(records, directory, locale=locale)
+    text = t("contact.header", locale) + body
 
     if len(text) <= MessageLimit.MAX_TEXT_LENGTH:
         await update.message.reply_text(text)

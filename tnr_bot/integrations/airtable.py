@@ -28,6 +28,16 @@ def operators_table_url(base_id: str) -> str:
     return f"{AIRTABLE_API}/{base_id}/{OPERATORS_TABLE}"
 
 
+def sterilization_language_field() -> str:
+    """Field on ``sterilization_request`` storing preferred locale (``en`` / ``ru`` / ``ka``)."""
+    return os.getenv("AIRTABLE_LANGUAGE_FIELD", "language").strip() or "language"
+
+
+def sterilization_created_field() -> str:
+    """Field used to pick the latest request (default ``created_date``)."""
+    return os.getenv("AIRTABLE_CREATED_FIELD", "created_date").strip() or "created_date"
+
+
 def sterilization_table_url(base_id: str) -> str:
     """Collection URL for list and PATCH on ``sterilization_request``."""
     return f"{AIRTABLE_API}/{base_id}/{STERILIZATION_TABLE}"
@@ -75,7 +85,17 @@ def filter_by_telegram_and_empty_chat_id_formula(normalized_username: str) -> st
     )
 
 
-async def fetch_matching_records(normalized_username: str) -> list[dict[str, Any]]:
+async def fetch_matching_records(
+    normalized_username: str,
+    *,
+    sort_newest_first: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Rows where ``telegram`` matches the handle.
+
+    When ``sort_newest_first`` is True, results are ordered by ``created_date`` (see
+    :func:`sterilization_created_field`) descending so the first row is the latest request.
+    """
     pat, base_id = get_airtable_credentials()
     if not pat or not base_id:
         raise RuntimeError("Airtable credentials are not configured")
@@ -84,6 +104,7 @@ async def fetch_matching_records(normalized_username: str) -> list[dict[str, Any
     headers = {"Authorization": f"Bearer {pat}"}
     out: list[dict[str, Any]] = []
     offset: str | None = None
+    created = sterilization_created_field()
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
@@ -91,6 +112,9 @@ async def fetch_matching_records(normalized_username: str) -> list[dict[str, Any
                 "filterByFormula": formula,
                 "pageSize": 100,
             }
+            if sort_newest_first:
+                params["sort[0][field]"] = created
+                params["sort[0][direction]"] = "desc"
             if offset:
                 params["offset"] = offset
 
