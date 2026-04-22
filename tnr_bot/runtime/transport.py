@@ -26,7 +26,7 @@ def parse_webhook_url(webhook_url: str) -> tuple[str, str]:
     path = parsed.path or "/"
     if path != "/" and path.endswith("/"):
         path = path.rstrip("/") or "/"
-    url_path = path if path.startswith("/") else f"/{path}"
+    url_path = f'{path}webhook' if path.startswith("/") else f"/{path}/webhook"
     normalized = f"{parsed.scheme}://{parsed.netloc}{url_path}"
     return url_path, normalized
 

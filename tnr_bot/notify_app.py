@@ -10,11 +10,17 @@ from __future__ import annotations
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Literal
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Request
+from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from telegram import Update
+from telegram.ext import Application
 
+from tnr_bot.config import get_airtable_credentials
+from tnr_bot.handlers.register import register_handlers
 from tnr_bot.integrations.airtable import (
     fetch_all_operator_records,
     fetch_matching_records_missing_telegram_chat_id,
@@ -25,6 +31,7 @@ from tnr_bot.integrations.airtable import (
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
 from tnr_bot.integrations.telegram_api import send_message
 from tnr_bot.locale import default_notify_locale, locale_from_airtable_value, normalize_locale
+from tnr_bot.runtime.transport import parse_webhook_url
 from tnr_bot.utils.formatting import (
     OperatorDirectory,
     build_notify_new_request_message,
@@ -36,7 +43,55 @@ from tnr_bot.utils.telegram_identity import normalize_handle
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="TNR Airtable notify webhook", version="0.1.0")
+def create_application() -> Application:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
+
+    pat, base_id = get_airtable_credentials()
+    if not pat or not base_id:
+        raise SystemExit(
+            "Airtable credentials missing: set AIRTABLE_PAT / AIRTABLE_BASE_ID "
+            "(or AIRTABLE_*_DEV when ENVIRONMENT=dev)"
+        )
+
+    app = Application.builder().token(token).build()
+    register_handlers(app)
+    return app
+
+telegram_app = create_application()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global telegram_app
+
+    webhook_url_raw = os.getenv("WEBHOOK_URL", "").strip()
+    if not webhook_url_raw:
+        raise SystemExit("WEBHOOK_URL is required when BOT_TRANSPORT=webhook")
+
+    url_path, webhook_url = parse_webhook_url(webhook_url_raw)
+
+    await telegram_app.initialize()
+    await telegram_app.bot.set_webhook(webhook_url)
+    yield
+
+    await telegram_app.shutdown()
+
+
+app = FastAPI(title="TNR Airtable Notify App", version="0.1.0", lifespan=lifespan)
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    global telegram_app
+    data = await request.json()
+
+    update = Update.de_json(data, telegram_app.bot)
+
+    await telegram_app.process_update(update)
+
+    return {"ok": True}
+
+
 
 # Short-window dedup for automation double-fires (seconds). Keyed by record_id + event
 # so operator and status updates in quick succession are not suppressed.
