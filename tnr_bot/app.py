@@ -1,15 +1,35 @@
-"""Build the Telegram Application and start polling or webhook transport."""
+"""
+FastAPI Server for running Telegram Application
+and managing HTTP webhooks for Airtable Automations: POST /notify/airtable
+
+Run locally: uvicorn tnr_bot.app:app --host 127.0.0.1 --port 8080
+Expose with ngrok: ngrok http 8080
+"""
 
 from __future__ import annotations
 
 import logging
 import os
+import time
+from contextlib import asynccontextmanager
+from typing import Any
 
+from fastapi import FastAPI, Header, HTTPException
+from starlette.requests import Request
+from telegram import Update
 from telegram.ext import Application
 
 from tnr_bot.config import get_airtable_credentials
 from tnr_bot.handlers.register import register_handlers
-from tnr_bot.runtime.transport import run_application
+from tnr_bot.integrations.airtable import fetch_record_by_id, resolve_telegram_chat_id_for_notify, \
+    fetch_all_operator_records, fetch_matching_records_missing_telegram_chat_id
+from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
+from tnr_bot.integrations.notify import _get_record_id, _get_notify_event, _dedup_key, _recent_notify_times, _DEDUP_SEC, \
+    _notify_locale, _build_message_for_event, NotifyBody
+from tnr_bot.integrations.telegram_api import send_message
+from tnr_bot.runtime.env_profile import env_start, env_shutdown
+from tnr_bot.utils.formatting import OperatorDirectory, build_operator_directory
+from tnr_bot.utils.telegram_identity import normalize_handle
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -35,11 +55,129 @@ def create_application() -> Application:
     return app
 
 
-def main() -> None:
-    app = create_application()
-    transport = os.getenv("BOT_TRANSPORT", "polling")
-    run_application(app, transport)
+telegram_app = create_application()
 
 
-if __name__ == "__main__":
-    main()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global telegram_app
+
+    env_profile = os.getenv("BOT_TRANSPORT", "polling")
+    await env_start(telegram_app, env_profile)
+
+    yield
+
+    await env_shutdown(telegram_app, env_profile)
+
+
+app = FastAPI(title="TNR Airtable Notify App", version="0.1.0", lifespan=lifespan)
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    global telegram_app
+    data = await request.json()
+
+    update = Update.de_json(data, telegram_app.bot)
+
+    await telegram_app.process_update(update)
+
+    return {"ok": True}
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/notify/airtable")
+async def notify_airtable(
+    payload: NotifyBody,
+    x_notify_secret: str | None = Header(None, alias="X-Notify-Secret"),
+) -> dict[str, Any]:
+    """
+    Verify shared secret, load the sterilization_request row, resolve Telegram chat_id,
+    and send a message. Optional ``event`` selects the template (default: new_request).
+    """
+    expected = os.getenv("NOTIFY_WEBHOOK_SECRET", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="NOTIFY_WEBHOOK_SECRET is not configured")
+
+    provided = (x_notify_secret or "").strip() or (payload.secret or "").strip()
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing secret")
+
+    record_id = _get_record_id(payload)
+    event = _get_notify_event(payload)
+
+    now = time.monotonic()
+    dk = _dedup_key(record_id, event)
+    last = _recent_notify_times.get(dk)
+    if last is not None and (now - last) < _DEDUP_SEC:
+        logger.info(
+            "Duplicate notify ignored for record_id=%s event=%s (within %ss)",
+            record_id,
+            event,
+            _DEDUP_SEC,
+        )
+        return {"status": "skipped_duplicate", "record_id": record_id, "event": event}
+
+    record = await fetch_record_by_id(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+
+    fields = record.get("fields") or {}
+    telegram_raw = fields.get("telegram")
+    if not telegram_raw or not str(telegram_raw).strip():
+        logger.info("Record %s has no telegram field; skip send", record_id)
+        return {"status": "skipped_no_telegram", "record_id": record_id, "event": event}
+
+    normalized = normalize_handle(str(telegram_raw).strip())
+    chat_id = await resolve_telegram_chat_id_for_notify(record, normalized)
+    if chat_id is None:
+        logger.info(
+            "No telegram_chat_id for handle=%s (user may not have /start the bot yet)",
+            normalized,
+        )
+        return {"status": "skipped_no_chat_id", "record_id": record_id, "event": event}
+
+    operator_directory: OperatorDirectory | None = None
+    try:
+        op_recs = await fetch_all_operator_records()
+        operator_directory = build_operator_directory(op_recs)
+    except Exception:
+        logger.warning("Could not load operators table for notify operator labels", exc_info=True)
+
+    loc = _notify_locale(payload, record)
+    text = _build_message_for_event(record, event, operator_directory, locale=loc)
+
+    await send_message(chat_id, text)
+
+    backfill_count = 0
+    try:
+        need_chat_id = await fetch_matching_records_missing_telegram_chat_id(normalized)
+        ids_to_fix = [r["id"] for r in need_chat_id if r.get("id")]
+        if not ids_to_fix:
+            ids_to_fix = [record_id]
+        ok = await patch_telegram_chat_id_on_records(ids_to_fix, chat_id)
+        if ok:
+            backfill_count = len(ids_to_fix)
+            if backfill_count > 1:
+                logger.info(
+                    "Set telegram_chat_id on %s row(s) for handle=%s (same user, field was blank)",
+                    backfill_count,
+                    normalized,
+                )
+    except Exception:
+        logger.exception("PATCH telegram_chat_id after notify (backfill same-handle rows) failed")
+
+    _recent_notify_times[dk] = now
+    if len(_recent_notify_times) > 5000:
+        _recent_notify_times.clear()
+
+    return {
+        "status": "sent",
+        "record_id": record_id,
+        "event": event,
+        "chat_id": chat_id,
+        "telegram_chat_id_rows_patched": backfill_count,
+    }
