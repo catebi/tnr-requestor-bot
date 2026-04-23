@@ -1,16 +1,25 @@
 # TNR requestor bot
 
-Telegram bot for a TNR sterilisation programme. It helps people who submitted the intake form see their **sterilisation requests** by matching their **public Telegram @username** to the `telegram` field in Airtable.
+Telegram bot for a TNR sterilization program. It helps people who submitted the intake form see their **sterilization requests** by matching their **public Telegram @username** to the `telegram` field in Airtable.
 
-User-facing messages use **English**, **Russian**, or **Georgian** (`en`, `ru`, `ka`). When the user has matching **`sterilization_request`** rows, the bot reads **`language`** from the **latest** row (by **`created_date`**, configurable) and prefers that over the Telegram app language; otherwise it falls back to Telegram, then English. **`/language`** updates **`language`** on every matching row. The notify webhook picks language in this order: JSON **`locale`** → Airtable **`language`** on the notified row → **`NOTIFY_DEFAULT_LOCALE`**.
+User-facing messages use **English**, **Russian**, or **Georgian** (`en`, `ru`, `ka`). When the user has matching (by name) **`sterilization_request`** rows, the bot reads **`language`** from the **latest** row (by **`created_date`**, configurable) and prefers that over the Telegram app language; otherwise it falls back to Telegram, then English. 
 
-**`status` in messages:** single-select values are translated for display using [`tnr_bot/locale/field_display.py`](tnr_bot/locale/field_display.py); map keys must match the **exact** strings in Airtable (see PRD §4.1). **`operator`** display names come from fixed fields on **`operators`**: **`operator_name_en`**, **`operator_name_ru`**, **`operator_name_ka`**, with fallback to **`operator_name`** when a localized cell is empty. Matching and formulas still use stored **`sterilization_request.operator`** and **`operators.telegram`** values unchanged.
+**`/language`** updates **`language`** on every matching row. The notify webhook picks language in this order: JSON **`locale`** → Airtable **`language`** on the notified row → **`NOTIFY_DEFAULT_LOCALE`**.
+
+**`/status` in messages:** single-select values are translated for display using [`tnr_bot/locale/field_display.py`](tnr_bot/locale/field_display.py); map keys must match the **exact** strings in Airtable (see PRD §4.1). 
+
+**`/operator`** display names come from fixed fields on **`operators`**: **`operator_name_en`**, **`operator_name_ru`**, **`operator_name_ka`**, with fallback to **`operator_name`** when a localized cell is empty. Matching and formulas still use stored **`sterilization_request.operator`** and **`operators.telegram`** values unchanged.
 
 ## Requirements
 
 - Python 3.10 or newer
 - A [Telegram bot token](https://t.me/BotFather)
 - An [Airtable](https://airtable.com/) base with a table named `sterilization_request` and a personal access token with **`data.records:read`** and **`data.records:write`** for that base (writes are used to store **`telegram_chat_id`** for notify DMs; without write scope, PATCH returns **403 Forbidden**).
+
+#### For prod testing:
+
+- ngrok and credentials from [ngrok](https://dashboard.ngrok.com/get-started/setup/linux) connection (create an account): `WEBHOOK_SECRET` from ngrok config codeline, `WEBHOOK_URL` under the 'ngrok http' codeline
+
 
 ## Setup
 
@@ -19,22 +28,8 @@ cd tnr-requestor-bot
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
+[ -f .env ] || cp .env.example .env # copypaste if .env not exists
 # Edit .env with your TELEGRAM_BOT_TOKEN and Airtable credentials
-```
-
-## Run
-
-From the repository root (with the virtual environment activated):
-
-```bash
-python bot.py
-```
-
-Or:
-
-```bash
-python -m tnr_bot
 ```
 
 ## Environment variables
@@ -49,8 +44,6 @@ Copy `.env.example` to `.env` and set the values you need.
 | `AIRTABLE_PAT_DEV` / `AIRTABLE_BASE_ID_DEV` | Optional separate base for local development |
 | `BOT_TRANSPORT` | `polling` (default, local) or `webhook` (production) |
 | `WEBHOOK_URL` | Full public HTTPS URL Telegram should call (required if `BOT_TRANSPORT=webhook`) |
-| `WEBHOOK_LISTEN` | Bind address (default `0.0.0.0`) |
-| `PORT` | Listen port for the webhook server (default `8080`) |
 | `WEBHOOK_SECRET` | Optional Telegram webhook secret token |
 | `NOTIFY_WEBHOOK_SECRET` | Secret for `POST /notify/airtable` (Airtable automation → notify server) |
 | `NOTIFY_HOST` / `NOTIFY_PORT` | Bind for uvicorn notify app (default `127.0.0.1` / `8080`) |
@@ -58,62 +51,35 @@ Copy `.env.example` to `.env` and set the values you need.
 | `AIRTABLE_LANGUAGE_FIELD` | Field on **`sterilization_request`** for preferred locale (default `language`; values `en` / `ru` / `ka`) |
 | `AIRTABLE_CREATED_FIELD` | Date/time field used to find the “latest” request (default `created_date`) |
 
-For local development, **long polling** is enough: leave `BOT_TRANSPORT` unset or set it to `polling`. For production behind HTTPS, use **webhooks** and configure your reverse proxy to forward traffic to the process `WEBHOOK_LISTEN` / `PORT`.
+## Run
 
-### Notify webhook (new record → Telegram DM)
+#### Local development (only Telegram Application testing):
 
-When a **`sterilization_request`** row is created or updated (e.g. **`telegram`** filled), you can call a small **FastAPI** app that sends the requestor a Telegram message (same summary as `/start`: `id`, `created_date`, `status`, `operator`).
-
-**Telegram rule:** the notify server can only DM users when it can resolve a numeric **`telegram_chat_id`**. **`/start`** and **`/myrequests`** PATCH that id into Airtable for every matching row; the webhook reads it from this record or from another row for the same handle. Without **`telegram_chat_id`** populated (user never matched `/start` or write failed), notify skips sending.
-
-| Variable | Description |
-|----------|-------------|
-| `NOTIFY_WEBHOOK_SECRET` | Shared secret; required for `POST /notify/airtable`. Send as header `X-Notify-Secret` or JSON field `secret`. |
-| `NOTIFY_HOST` / `NOTIFY_PORT` | Bind address for the notify server (defaults `127.0.0.1` and `8080`). |
-| `NOTIFY_DEFAULT_LOCALE` | `en`, `ru`, or `ka` only when the webhook body has no **`locale`** and the row’s **`language`** field is empty or unknown. |
-
-On **`/start`** and **`/myrequests`**, **all** `sterilization_request` records that match the user’s handle (same formula as the listing) are updated with their Telegram numeric chat id—not only a single row. If there are **no** matching rows, nothing is written to Airtable.
-
-After a successful notify **`sendMessage`**, the webhook also PATCHes **`telegram_chat_id`** on **every** row for that same Telegram handle where **`telegram_chat_id`** is still empty (so older rows for the same user get filled in one go). The JSON response includes **`telegram_chat_id_rows_patched`** (count of rows in that PATCH batch).
-
-**Airtable base:** add a **Single line text** field **`telegram_chat_id`** on `sterilization_request` (the bot PATCHes the numeric chat id as a string). If PATCH returns **422**, check the field name and type.
-
-**Run the notify server locally (second terminal):**
+Leave `BOT_TRANSPORT` unset or set it to `polling` and run:
 
 ```bash
-# from repo root, venv active, .env loaded
-uvicorn tnr_bot.notify_app:app --host "${NOTIFY_HOST:-127.0.0.1}" --port "${NOTIFY_PORT:-8080}"
+uvicorn tnr_bot.app:app --host ${NOTIFY_HOST:127.0.0.1} --port ${NOTIFY_PORT:8080}
 ```
 
-**Expose HTTPS for Airtable (ngrok):**
+#### Prod development (with Telegram and Airtable Webhook):
 
-1. Install [ngrok](https://ngrok.com/) and run: `ngrok http 8080` (or your `NOTIFY_PORT`).
-2. Copy the **https://…** forwarding URL (changes each run on free tier).
-3. In **Airtable → Automations**, trigger on record created in `sterilization_request`, action **Webhook** or **Run script** that `POST`s JSON, for example:
+1. Install [ngrok](https://ngrok.com/)
+2. Configure `WEBHOOK_URL` and `WEBHOOK_SECRET` in .env from [ngrok setup](https://dashboard.ngrok.com/get-started/setup/linux)
+3. Open Airtable Base, then → Automations, find tg record script automations
+4. Insert `WEBHOOK_URL` in `notifyBaseUrl` field
+3. Run in first terminal:
+```bash
+uvicorn tnr_bot.app:app --host ${NOTIFY_HOST:127.0.0.1} --port ${NOTIFY_PORT:8080}
+```
+4. Run in second terminal:
+```bash
+ngrok http ${NOTIFY_PORT:8080}
+```
 
-   `{"recordId": "<Airtable record id>", "secret": "<NOTIFY_WEBHOOK_SECRET>"}`
 
-   Optional **`event`** (or **`notify_type`**) selects the message template:
+Health check: `GET https://<ngrok-host>/health`
 
-   | Value | Use when |
-   |-------|----------|
-   | `new_request` | (default) New row or generic notify — “New sterilization request…” |
-   | `operator_assigned` | **`operator`** was set or changed |
-   | `status_changed` | **`status`** was updated |
-
-   Example: `{"recordId":"rec…","event":"status_changed"}`
-
-   Optional **`locale`**: `en`, `ru`, or `ka` (overrides Airtable **`language`** and **`NOTIFY_DEFAULT_LOCALE`**). Example: `{"recordId":"rec…","locale":"ru"}`.
-
-   to `https://<ngrok-host>/notify/airtable`
-
-   Prefer sending `X-Notify-Secret` as a header instead of body `secret` when the automation supports it.
-
-**Operator / status updates (required in Airtable):** The Telegram bot does not see Airtable edits. Add **separate automations** (or one automation per case) with trigger **When a record is updated** in `sterilization_request`, and restrict **watch fields** to **`operator`** and/or **`status`** if your plan supports it. Point each automation at the same `POST /notify/airtable` URL and pass **`event`**: `operator_assigned` or `status_changed` so users get the right wording. Dedup is per `record_id` **and** `event`, so a status change shortly after an operator assignment still delivers both messages.
-
-4. Health check: `GET https://<ngrok-host>/health`
-
-**curl test:**
+curl test:
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8080/notify/airtable" \
@@ -122,38 +88,10 @@ curl -sS -X POST "http://127.0.0.1:8080/notify/airtable" \
   -d '{"record_id":"recXXXXXXXX","event":"status_changed"}'
 ```
 
-**Airtable Automation script:** copy [`scripts/airtable_automation_notify.js`](scripts/airtable_automation_notify.js) into the Automation **Run script** action, then add inputs: `recordId`, `notifyBaseUrl`, `webhookSecret`, and optionally **`notifyEvent`** (`new_request` / `operator_assigned` / `status_changed`). Map `recordId` from the trigger’s record id; set **`notifyEvent`** per automation (e.g. `status_changed` for a status-watch automation).
-
-## Airtable
-
-The bot reads the table **`sterilization_request`**. On **`/start`** and **`/myrequests`**, it finds rows where the field **`telegram`** matches the user’s Telegram username, ignoring case and an optional leading `@`.
-
-Add a **`language`** field (single line text or single select) with allowed values **`en`**, **`ru`**, **`ka`** so the form and bot agree. The bot uses the latest row’s **`language`** (see **`AIRTABLE_CREATED_FIELD`**) for message wording when set.
-
-It replies with these fields for each match: **`id`**, **`created_date`**, **`status`**, **`operator`**.
-
-**`/contact`** uses the same matching requests. If **no** request has an **`operator`** assigned, the bot says so and suggests contacting **`@religofsil`**. If at least one request has an **`operator`**, the bot loads the **`operators`** table (matching **`operator_name`** to the request’s **`operator`** value), and shows **id**, **status**, localized operator names (**`operator_name_en`** / **`_ru`** / **`_ka`** by user locale), and Telegram (**`telegram`**). Rows without an assignee are listed as “not assigned yet”; if an assignee has no row or no handle in **`operators`**, the bot says the directory has no Telegram handle for that name.
-
-Users must have a **public Telegram username** set in Telegram settings; otherwise the bot cannot match the form.
 
 ## Project layout
 
-The code lives in the **`tnr_bot`** package:
-
-| Area | Role |
-|------|------|
-| `tnr_bot/config.py` | Environment and credentials |
-| `tnr_bot/locale/field_display.py` | Display-only translations for `status` labels |
-| `tnr_bot/integrations/airtable.py` | Airtable API and query formulas |
-| `tnr_bot/handlers/` | Command handlers; register new ones in `handlers/register.py` |
-| `tnr_bot/utils/` | Formatting and small helpers |
-| `tnr_bot/runtime/transport.py` | Polling vs webhook startup |
-| `tnr_bot/app.py` | Application factory and `main()` |
-| `tnr_bot/notify_app.py` | FastAPI webhook for Airtable → Telegram (run with uvicorn) |
-| `tnr_bot/integrations/airtable_write.py` | PATCH `telegram_chat_id` and `language` |
-| `tnr_bot/integrations/telegram_api.py` | Outbound `sendMessage` for notify path |
-
-See `PRD.md` for broader product notes (status flows, future features).
+TBA
 
 ## License
 
