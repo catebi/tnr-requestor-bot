@@ -2,7 +2,7 @@
 FastAPI Server for running Telegram Application
 and managing HTTP webhooks for Airtable Automations: POST /notify/airtable
 
-Run locally: uvicorn tnr_bot.app:app --host 127.0.0.1 --port 8080
+Run locally: uvicorn app:app --host 127.0.0.1 --port 8080
 Expose with ngrok: ngrok http 8080
 """
 
