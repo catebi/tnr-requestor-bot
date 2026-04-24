@@ -51,8 +51,6 @@ class TelegramChatHandler(logging.StreamHandler):
 
 
 def setup_logging(app, chat_id, ping_developers, loop):
-    import logging
-
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(logging.INFO)
