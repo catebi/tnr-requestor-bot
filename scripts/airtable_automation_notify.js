@@ -20,22 +20,45 @@
  * Requires: Automation "Run script" with `fetch` available (check your Airtable plan).
  */
 
-const { recordId, notifyBaseUrl, webhookSecret, notifyEvent } = input.config();
+async function fetch_error(error_message){
+  const error_url = `${notifyBaseUrl}/log_error`;
+  const body = {'automation_name': String(notifyEvent).trim(),
+  'error_message': error_message};
 
-if (!recordId || String(recordId).trim() === "") {
-  throw new Error("Automation input `recordId` is missing. Map it from the trigger record.");
+  const response = await fetch(error_url, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify(body),
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Log Error request failed: HTTP ${response.status} — ${text}`);
+  }
+
+  console.log(`Log Error OK: HTTP ${response.status}`);
+  console.log(text.length > 800 ? text.slice(0, 800) + "…" : text)
 }
+
+const { recordId, notifyBaseUrl, notifyEvent } = input.config();
+const webhookSecret = input.secret("webhookSecret")
 
 if (!notifyBaseUrl || String(notifyBaseUrl).trim() === "") {
   throw new Error("Set automation input `notifyBaseUrl` (e.g. your ngrok https URL).");
 }
-
 if (!webhookSecret || String(webhookSecret).trim() === "") {
-  throw new Error("Set automation input `webhookSecret` to match NOTIFY_WEBHOOK_SECRET.");
+  await fetch_error('Set automation input `webhookSecret` to match NOTIFY_WEBHOOK_SECRET.');
+}
+if (!recordId || String(recordId).trim() === "") {
+  await fetch_error('Automation input `recordId` is missing. Map it from the trigger record.')
 }
 
-const base = String(notifyBaseUrl).trim().replace(/\/+$/, "");
-const url = `${base}/notify/airtable`;
+
+// const base = String(notifyBaseUrl).trim().replace(/\/+$/, "");
+const url = `${notifyBaseUrl}/notify/airtable`;
 
 const body = { recordId: String(recordId).trim() };
 if (notifyEvent != null && String(notifyEvent).trim() !== "") {
@@ -54,7 +77,7 @@ const response = await fetch(url, {
 const text = await response.text();
 
 if (!response.ok) {
-  throw new Error(`Notify webhook failed: HTTP ${response.status} — ${text}`);
+  await fetch_error(`Notify webhook failed: HTTP ${response.status} — ${text}`);
 }
 
 console.log(`Notify OK: HTTP ${response.status}`);
