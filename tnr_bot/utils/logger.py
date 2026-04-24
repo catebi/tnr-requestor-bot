@@ -65,6 +65,9 @@ def setup_logging(app, chat_id, ping_developers, loop):
     console.setFormatter(format)
     root.addHandler(console)
 
-    tg_chat_handler = TelegramChatHandler(app, chat_id, ping_developers, loop, level=logging.WARNING)
-    tg_chat_handler.setFormatter(format)
-    root.addHandler(tg_chat_handler)
+    if chat_id:
+        tg_chat_handler = TelegramChatHandler(app, chat_id, ping_developers, loop, level=logging.WARNING)
+        tg_chat_handler.setFormatter(format)
+        root.addHandler(tg_chat_handler)
+    else:
+        root.warning("No chat id for logging provided")

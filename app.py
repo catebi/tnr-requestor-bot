@@ -8,6 +8,7 @@ Expose with ngrok: ngrok http 8080
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -26,15 +27,11 @@ from tnr_bot.integrations.airtable import fetch_record_by_id, resolve_telegram_c
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
 from tnr_bot.integrations.notify import _get_record_id, _get_notify_event, _dedup_key, _recent_notify_times, _DEDUP_SEC, \
     _notify_locale, _build_message_for_event, NotifyBody
-from tnr_bot.integrations.telegram_api import send_message
 from tnr_bot.runtime.env_profile import env_start, env_shutdown
 from tnr_bot.utils.formatting import OperatorDirectory, build_operator_directory
+from tnr_bot.utils.logger import setup_logging
 from tnr_bot.utils.telegram_identity import normalize_handle
 
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    level=logging.INFO,
-)
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +60,17 @@ async def lifespan(app: FastAPI):
     global telegram_app
 
     env_profile = os.getenv("BOT_TRANSPORT", "polling")
+    developers = os.getenv("DEVELOPERS")
+    logs_chat_id = os.getenv('LOGS_CHAT_ID')
+
+    loop = asyncio.get_running_loop()
+
+    setup_logging(
+        app=telegram_app,
+        chat_id=logs_chat_id,
+        ping_developers=developers,
+        loop=loop
+    )
     await env_start(telegram_app, env_profile)
 
     yield
@@ -79,7 +87,6 @@ async def webhook(request: Request):
     data = await request.json()
 
     update = Update.de_json(data, telegram_app.bot)
-
     await telegram_app.process_update(update)
 
     return {"ok": True}
@@ -88,6 +95,14 @@ async def webhook(request: Request):
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
+@app.post("/log_error")
+async def log_error(request: Request) -> dict[str, str]:
+    global telegram_app
+    data = await request.json()
+    log_message = f"Airtable automation {data.get('automation_name')} raised error {data.get('error_message')}"
+
+    logger.error(log_message, exc_info=True)
+    return data
 
 @app.post("/notify/airtable")
 async def notify_airtable(
@@ -150,7 +165,7 @@ async def notify_airtable(
     loc = _notify_locale(payload, record)
     text = _build_message_for_event(record, event, operator_directory, locale=loc)
 
-    await send_message(chat_id, text)
+    await telegram_app.bot.send_message(chat_id, text)
 
     backfill_count = 0
     try:
