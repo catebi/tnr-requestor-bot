@@ -36,22 +36,23 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and set the values you need.
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from BotFather (required) |
-| `LOGS_CHAT_ID` | ID of the chat where the bot should send warnings and errors to |
-| `DEVELOPERS` | @usernames of the developers (comma separated) so the bot can ping them logging the errors |
-| `ENVIRONMENT` | `dev` (default) uses `AIRTABLE_PAT_DEV` / `AIRTABLE_BASE_ID_DEV`; otherwise uses `AIRTABLE_PAT` / `AIRTABLE_BASE_ID` |
-| `AIRTABLE_PAT` / `AIRTABLE_BASE_ID` | Production Airtable token and base id |
-| `AIRTABLE_PAT_DEV` / `AIRTABLE_BASE_ID_DEV` | Optional separate base for local development |
-| `BOT_TRANSPORT` | `polling` (default, local) or `webhook` (production) |
-| `WEBHOOK_URL` | Full public HTTPS URL Telegram should call (required if `BOT_TRANSPORT=webhook`) |
-| `WEBHOOK_SECRET` | Optional Telegram webhook secret token |
-| `NOTIFY_WEBHOOK_SECRET` | Secret for `POST /notify/airtable` (Airtable automation → notify server) |
-| `NOTIFY_HOST` / `NOTIFY_PORT` | Bind for uvicorn notify app (default `127.0.0.1` / `8080`) |
-| `NOTIFY_DEFAULT_LOCALE` | Default language for notify DMs when JSON `locale` and Airtable `language` are absent: `en`, `ru`, or `ka` (default `en`) |
-| `AIRTABLE_LANGUAGE_FIELD` | Field on **`sterilization_request`** for preferred locale (default `language`; values `en` / `ru` / `ka`) |
-| `AIRTABLE_CREATED_FIELD` | Date/time field used to find the “latest” request (default `created_date`) |
+| Variable                                    | Description                                                                                                               |
+|---------------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| `APP_NAME`                        | Application name for logging messages                                                                                     |
+| `TELEGRAM_BOT_TOKEN`                        | Bot token from BotFather (required)                                                                                       |
+| `LOGS_CHAT_ID`                              | ID of the chat where the bot should send warnings and errors to                                                           |
+| `DEVELOPERS`                                | @usernames of the developers (comma separated) so the bot can ping them logging the errors                                |
+| `ENVIRONMENT`                               | `dev` (default) uses `AIRTABLE_PAT_DEV` / `AIRTABLE_BASE_ID_DEV`; otherwise uses `AIRTABLE_PAT` / `AIRTABLE_BASE_ID`      |
+| `AIRTABLE_PAT` / `AIRTABLE_BASE_ID`         | Production Airtable token and base id                                                                                     |
+| `AIRTABLE_PAT_DEV` / `AIRTABLE_BASE_ID_DEV` | Optional separate base for local development                                                                              |
+| `BOT_TRANSPORT`                             | `polling` (default, local) or `webhook` (production)                                                                      |
+| `WEBHOOK_URL`                               | Full public HTTPS URL Telegram should call (required if `BOT_TRANSPORT=webhook`)                                          |
+| `WEBHOOK_SECRET`                            | Optional Telegram webhook secret token                                                                                    |
+| `NOTIFY_WEBHOOK_SECRET`                     | Secret for `POST /notify/airtable` (Airtable automation → notify server)                                                  |
+| `NOTIFY_HOST` / `NOTIFY_PORT`               | Bind for uvicorn notify app (default `127.0.0.1` / `8080`)                                                                |
+| `NOTIFY_DEFAULT_LOCALE`                     | Default language for notify DMs when JSON `locale` and Airtable `language` are absent: `en`, `ru`, or `ka` (default `en`) |
+| `AIRTABLE_LANGUAGE_FIELD`                   | Field on **`sterilization_request`** for preferred locale (default `language`; values `en` / `ru` / `ka`)                 |
+| `AIRTABLE_CREATED_FIELD`                    | Date/time field used to find the “latest” request (default `created_date`)                                                |
 
 ## Run
 

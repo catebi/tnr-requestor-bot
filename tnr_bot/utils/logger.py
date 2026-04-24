@@ -9,6 +9,7 @@ class TelegramChatHandler(logging.StreamHandler):
         self,
         app,
         chat_id: int,
+        app_name: str,
         ping_developers: Optional[str],
         loop: asyncio.AbstractEventLoop,
         level: int = logging.NOTSET,
@@ -20,6 +21,7 @@ class TelegramChatHandler(logging.StreamHandler):
         self.chat_id = chat_id
         self.loop = loop
         self.min_level = level
+        self.app_name = app_name
         self.ping_developers = ping_developers
 
     async def send_message(self, message: str):
@@ -36,7 +38,7 @@ class TelegramChatHandler(logging.StreamHandler):
             if record.levelno < self.min_level:
                 return
 
-            msg = self.format(record)
+            msg = self.app_name + '| ' + self.format(record)
 
             if record.levelno >= logging.ERROR and self.ping_developers:
                 msg = self.ping_developers + ' ' + msg
@@ -50,7 +52,7 @@ class TelegramChatHandler(logging.StreamHandler):
             self.handleError(record)
 
 
-def setup_logging(app, chat_id, ping_developers, loop):
+def setup_logging(app, chat_id, app_name, ping_developers, loop):
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(logging.INFO)
@@ -64,7 +66,7 @@ def setup_logging(app, chat_id, ping_developers, loop):
     root.addHandler(console)
 
     if chat_id:
-        tg_chat_handler = TelegramChatHandler(app, chat_id, ping_developers, loop, level=logging.WARNING)
+        tg_chat_handler = TelegramChatHandler(app, chat_id, app_name, ping_developers, loop, level=logging.WARNING)
         tg_chat_handler.setFormatter(format)
         root.addHandler(tg_chat_handler)
     else:

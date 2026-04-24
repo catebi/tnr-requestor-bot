@@ -62,12 +62,14 @@ async def lifespan(app: FastAPI):
     env_profile = os.getenv("BOT_TRANSPORT", "polling")
     developers = os.getenv("DEVELOPERS")
     logs_chat_id = os.getenv('LOGS_CHAT_ID')
+    app_name = os.getenv('APP_NAME')
 
     loop = asyncio.get_running_loop()
 
     setup_logging(
         app=telegram_app,
         chat_id=logs_chat_id,
+        app_name=app_name,
         ping_developers=developers,
         loop=loop
     )
