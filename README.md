@@ -39,6 +39,8 @@ Copy `.env.example` to `.env` and set the values you need.
 | Variable | Description |
 |----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Bot token from BotFather (required) |
+| `LOGS_CHAT_ID` | ID of the chat where the bot should send warnings and errors to |
+| `DEVELOPERS` | @usernames of the developers (comma separated) so the bot can ping them logging the errors |
 | `ENVIRONMENT` | `dev` (default) uses `AIRTABLE_PAT_DEV` / `AIRTABLE_BASE_ID_DEV`; otherwise uses `AIRTABLE_PAT` / `AIRTABLE_BASE_ID` |
 | `AIRTABLE_PAT` / `AIRTABLE_BASE_ID` | Production Airtable token and base id |
 | `AIRTABLE_PAT_DEV` / `AIRTABLE_BASE_ID_DEV` | Optional separate base for local development |
