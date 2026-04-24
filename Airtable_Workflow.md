@@ -34,7 +34,7 @@ After a successful notify **`sendMessage`**, the webhook also PATCHes **`telegra
 
 1. Do steps to Run on Prod
 2. Add a new record in the AT base (you can do that manually in `sterilization_request` table). The bot PATCHes the numeric chat id as a string. If PATCH returns **422**, check the field name and type.
-3. If everything is correct, the treigger will send a response like that:
+3. If everything is correct, the trigger will send a response like that:
 
 
    `{"recordId": "<Airtable record id>", "secret": "<NOTIFY_WEBHOOK_SECRET>"}`
