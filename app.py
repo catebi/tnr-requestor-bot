@@ -21,15 +21,16 @@ from telegram import Update
 from telegram.ext import Application
 
 from tnr_bot.config import get_airtable_credentials
+from tnr_bot.data.logger import LoggerCreateData
 from tnr_bot.handlers.register import register_handlers
 from tnr_bot.integrations.airtable import fetch_record_by_id, resolve_telegram_chat_id_for_notify, \
     fetch_all_operator_records, fetch_matching_records_missing_telegram_chat_id
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
 from tnr_bot.integrations.notify import _get_record_id, _get_notify_event, _dedup_key, _recent_notify_times, _DEDUP_SEC, \
     _notify_locale, _build_message_for_event, NotifyBody
+from tnr_bot.logger.setup_logging import setup_logging
 from tnr_bot.runtime.env_profile import env_start, env_shutdown
 from tnr_bot.utils.formatting import OperatorDirectory, build_operator_directory
-from tnr_bot.utils.logger import setup_logging
 from tnr_bot.utils.telegram_identity import normalize_handle
 
 logger = logging.getLogger(__name__)
@@ -60,19 +61,13 @@ async def lifespan(app: FastAPI):
     global telegram_app
 
     env_profile = os.getenv("BOT_TRANSPORT", "polling")
-    developers = os.getenv("DEVELOPERS")
-    logs_chat_id = os.getenv('LOGS_CHAT_ID')
-    app_name = os.getenv('APP_NAME')
 
-    loop = asyncio.get_running_loop()
-
-    setup_logging(
+    logger_create_data = LoggerCreateData(
         app=telegram_app,
-        chat_id=logs_chat_id,
-        app_name=app_name,
-        ping_developers=developers,
-        loop=loop
+        loop=asyncio.get_running_loop(),
+        min_level=logging.WARNING,
     )
+    setup_logging(logger_create_data)
     await env_start(telegram_app, env_profile)
 
     yield
@@ -93,9 +88,11 @@ async def webhook(request: Request):
 
     return {"ok": True}
 
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
 
 @app.post("/log_error")
 async def log_error(request: Request) -> dict[str, str]:
@@ -106,10 +103,11 @@ async def log_error(request: Request) -> dict[str, str]:
     logger.error(log_message, exc_info=True)
     return data
 
+
 @app.post("/notify/airtable")
 async def notify_airtable(
-    payload: NotifyBody,
-    x_notify_secret: str | None = Header(None, alias="X-Notify-Secret"),
+        payload: NotifyBody,
+        x_notify_secret: str | None = Header(None, alias="X-Notify-Secret"),
 ) -> dict[str, Any]:
     """
     Verify shared secret, load the sterilization_request row, resolve Telegram chat_id,
