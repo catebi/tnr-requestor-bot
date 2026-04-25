@@ -6,7 +6,7 @@ from tnr_bot.data.logger import LoggerCreateData
 
 class TelegramChatHandler(logging.StreamHandler):
     def __init__(self, logger_create_data: LoggerCreateData):
-        super().__init__(logger_create_data.stream)
+        super().__init__(logger_create_data.stream) # We can't make frozen dataclass from Pydantic LoggerCreateData because of super init
 
         self.app = logger_create_data.app
         self.loop = logger_create_data.loop
