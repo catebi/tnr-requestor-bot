@@ -1,0 +1,1 @@
+"""Data classes for input and output parameters structuring"""
