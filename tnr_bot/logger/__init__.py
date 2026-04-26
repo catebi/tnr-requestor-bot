@@ -1,1 +1,0 @@
-"""Custom logger with Telegram stream handler to send warning and errors into telegram logs chat"""

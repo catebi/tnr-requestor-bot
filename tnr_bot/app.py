@@ -21,20 +21,19 @@ from telegram import Update
 from telegram.ext import Application
 
 from tnr_bot.config import get_airtable_credentials
-from tnr_bot.data.logger import LoggerCreateData
 from tnr_bot.handlers.register import register_handlers
 from tnr_bot.integrations.airtable import fetch_record_by_id, resolve_telegram_chat_id_for_notify, \
     fetch_all_operator_records, fetch_matching_records_missing_telegram_chat_id
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
 from tnr_bot.integrations.notify import _get_record_id, _get_notify_event, _dedup_key, _recent_notify_times, _DEDUP_SEC, \
     _notify_locale, _build_message_for_event, NotifyBody
-from tnr_bot.logger.setup_logging import setup_logging
 from tnr_bot.runtime.env_profile import env_start, env_shutdown
 from tnr_bot.utils.formatting import OperatorDirectory, build_operator_directory
 from tnr_bot.utils.telegram_identity import normalize_handle
+from catebi_telegram_logger.data.logger import LoggerCreateData
+from catebi_telegram_logger.logger.setup import setup_logging
 
 logger = logging.getLogger(__name__)
-
 
 def create_application() -> Application:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -65,6 +64,9 @@ async def lifespan(app: FastAPI):
     logger_create_data = LoggerCreateData(
         app=telegram_app,
         loop=asyncio.get_running_loop(),
+        logs_chat_id=os.getenv('LOGS_CHAT_ID'),
+        app_name=os.getenv('APP_NAME', 'TNR Airtable Notify App'),
+        ping_developers=os.getenv('DEVELOPERS'),
         min_level=logging.WARNING,
     )
     setup_logging(logger_create_data)
