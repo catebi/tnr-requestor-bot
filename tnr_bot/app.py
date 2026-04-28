@@ -292,7 +292,7 @@ async def notify_airtable(
     now = datetime.now()
     record_history: Optional[RecordHistory] = recent_history.get(record_id)
     new_scheduled_time = now + timedelta(seconds=_DEDUP_SEC)
-    new_job = scheduler.add_job(send_notification,
+    new_job = scheduler.add_job(schedule_notification,
                                 trigger='date',
                                 run_date=new_scheduled_time,
                                 args=[payload],
