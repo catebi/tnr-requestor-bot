@@ -1,1 +1,1 @@
-"""Data classes for input and output parameters structuring"""
+"""Pydantic models for data processing"""
