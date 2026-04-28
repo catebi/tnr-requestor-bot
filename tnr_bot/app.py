@@ -11,29 +11,33 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from contextlib import asynccontextmanager
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Optional
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from catebi_telegram_logger.data.logger import LoggerCreateData
+from catebi_telegram_logger.logger.setup import setup_logging
 from fastapi import FastAPI, Header, HTTPException
 from starlette.requests import Request
 from telegram import Update
 from telegram.ext import Application
 
 from tnr_bot.config import get_airtable_credentials
+from tnr_bot.data.recent_history import RecordHistory
+from tnr_bot.data.record import Record
 from tnr_bot.handlers.register import register_handlers
 from tnr_bot.integrations.airtable import fetch_record_by_id, resolve_telegram_chat_id_for_notify, \
     fetch_all_operator_records, fetch_matching_records_missing_telegram_chat_id
 from tnr_bot.integrations.airtable_write import patch_telegram_chat_id_on_records
-from tnr_bot.integrations.notify import _get_record_id, _get_notify_event, _dedup_key, _recent_notify_times, _DEDUP_SEC, \
+from tnr_bot.integrations.notify import _get_record_id, _get_notify_event, recent_history, _DEDUP_SEC, \
     _notify_locale, _build_message_for_event, NotifyBody
 from tnr_bot.runtime.env_profile import env_start, env_shutdown
-from tnr_bot.utils.formatting import OperatorDirectory, build_operator_directory
+from tnr_bot.utils.formatting import build_operator_directory
 from tnr_bot.utils.telegram_identity import normalize_handle
-from catebi_telegram_logger.data.logger import LoggerCreateData
-from catebi_telegram_logger.logger.setup import setup_logging
 
 logger = logging.getLogger(__name__)
+
 
 def create_application() -> Application:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -53,6 +57,7 @@ def create_application() -> Application:
 
 
 telegram_app = create_application()
+scheduler = AsyncIOScheduler()
 
 
 @asynccontextmanager
@@ -60,16 +65,25 @@ async def lifespan(app: FastAPI):
     global telegram_app
 
     env_profile = os.getenv("BOT_TRANSPORT", "polling")
+    logs_chat_var = os.getenv("LOGS_CHAT_ID")
+    if not logs_chat_var:
+        logger.error("LOGS_CHAT_ID is not set")
+    else:
+        try:
+            logs_chat_id = int(logs_chat_var)
+            logger_create_data = LoggerCreateData(
+                app=telegram_app,
+                loop=asyncio.get_running_loop(),
+                logs_chat_id=logs_chat_id,
+                app_name=os.getenv('APP_NAME', 'TNR Airtable Notify App'),
+                ping_developers=os.getenv('DEVELOPERS'),
+                min_level=logging.WARNING,
+            )
+            setup_logging(logger_create_data)
+        except ValueError:
+            logger.error(f"LOGS_CHAT_ID must be Integer, got {logs_chat_var}")
 
-    logger_create_data = LoggerCreateData(
-        app=telegram_app,
-        loop=asyncio.get_running_loop(),
-        logs_chat_id=os.getenv('LOGS_CHAT_ID'),
-        app_name=os.getenv('APP_NAME', 'TNR Airtable Notify App'),
-        ping_developers=os.getenv('DEVELOPERS'),
-        min_level=logging.WARNING,
-    )
-    setup_logging(logger_create_data)
+    scheduler.start()
     await env_start(telegram_app, env_profile)
 
     yield
@@ -106,11 +120,161 @@ async def log_error(request: Request) -> dict[str, str]:
     return data
 
 
+def is_duplicate(history: Optional[RecordHistory], record: Record) -> bool:
+    if not history or not history.last_sent_message_data:
+        return False
+    return history.last_sent_message_data.fingerprint == record.fingerprint
+
+
+def skip(reason: str, record_id: str, event: str):
+    return {
+        "status": f"skipped_{reason}",
+        "record_id": record_id,
+        "event": event,
+    }
+
+
+async def safe_resolve_chat_id(record_raw, normalized, record_id,
+                               event):  # everything Airtable related should be refactored,
+    # but major changes will be done in the separate task
+    try:
+        return await resolve_telegram_chat_id_for_notify(record_raw, normalized)
+    except Exception:
+        logger.exception("chat_id resolve failed", extra={
+            "record_id": record_id,
+            "event": event,
+        })
+        return None
+
+
+async def load_operator_directory_safe():
+    try:
+        op_recs = await fetch_all_operator_records()
+        return build_operator_directory(op_recs)
+    except Exception:
+        logger.warning("operator directory load failed", exc_info=True)
+        return None
+
+
+async def safe_backfill_chat_id(normalized, chat_id, record_id):
+    try:
+        rows = await fetch_matching_records_missing_telegram_chat_id(normalized)
+        ids = [r["id"] for r in rows if r.get("id")] or [record_id]
+
+        if await patch_telegram_chat_id_on_records(ids, chat_id):
+            return len(ids)
+    except Exception:
+        logger.exception("backfill failed")
+
+    return 0
+
+
+def update_history_success(key: str, record: Record):
+    history = recent_history.get(key)
+
+    if not history:
+        history = RecordHistory(scheduled_time=None,
+                                scheduled_job=None,
+                                last_sent_message_data=None)
+        recent_history[key] = history
+
+    history.last_sent_message_data = record
+    history.fail_count = 0
+
+
+def cleanup_history_if_needed(key: str):
+    if len(recent_history) > 5000:
+        recent_history.clear()
+        return
+
+    recent_history.pop(key, None)
+
+
+async def send_notification(
+        payload: NotifyBody,
+        record_id: str
+):
+    record_raw = await fetch_record_by_id(record_id)
+    event = _get_notify_event(payload)
+
+    if not record_raw:
+        return skip("not_found", record_id, event)
+
+    fields = record_raw.get("fields") or {}
+
+    record = Record(
+        record_id=record_id,
+        created_date=fields.get("created_date", ''),
+        status=fields.get("status", ''),
+        operator=fields.get("operator", ''),
+    )
+
+    telegram_raw = fields.get("telegram")
+    if not telegram_raw or not str(telegram_raw).strip():
+        return skip("no_telegram", record_id, event)
+
+    normalized = normalize_handle(str(telegram_raw).strip())
+
+    chat_id = await safe_resolve_chat_id(record_raw, normalized, record_id, event)
+    if chat_id is None:
+        return skip("no_chat_id", record_id, event)
+
+    operator_directory = await load_operator_directory_safe()
+
+    loc = _notify_locale(payload, record_raw)
+    text = _build_message_for_event(record_raw, event, operator_directory, locale=loc)
+
+    await telegram_app.bot.send_message(chat_id, text)
+
+    update_history_success(record_id, record)
+
+    backfill_count = await safe_backfill_chat_id(normalized, chat_id, record_id)
+
+    cleanup_history_if_needed(record_id)
+
+    return {
+        "status": "sent",
+        "record_id": record_id,
+        "event": event,
+        "chat_id": chat_id,
+        "telegram_chat_id_rows_patched": backfill_count,
+    }
+
+
+async def schedule_notification(payload: NotifyBody):
+    record_id = _get_record_id(payload)
+    event = _get_notify_event(payload)
+
+    try:
+        return await send_notification(
+            payload=payload,
+            record_id=record_id
+        )
+
+    except Exception:
+        logger.exception("send_notification failed", extra={
+            "record_id": record_id,
+            "event": event,
+        })
+
+        history = recent_history.get(record_id)
+        if history:
+            history.fail_count = getattr(history, "fail_count", 0) + 1
+
+            if history.fail_count >= 3:
+                logger.error("Max retries reached, dropping job", extra={"record_id": record_id})
+                if history.scheduled_job:
+                    history.scheduled_job.remove()
+                recent_history.pop(record_id, None)
+
+        return {"status": "error", "record_id": record_id, "event": event}
+
+
 @app.post("/notify/airtable")
 async def notify_airtable(
         payload: NotifyBody,
         x_notify_secret: str | None = Header(None, alias="X-Notify-Secret"),
-) -> dict[str, Any]:
+):
     """
     Verify shared secret, load the sterilization_request row, resolve Telegram chat_id,
     and send a message. Optional ``event`` selects the template (default: new_request).
@@ -124,77 +288,22 @@ async def notify_airtable(
         raise HTTPException(status_code=401, detail="Invalid or missing secret")
 
     record_id = _get_record_id(payload)
-    event = _get_notify_event(payload)
 
-    now = time.monotonic()
-    dk = _dedup_key(record_id, event)
-    last = _recent_notify_times.get(dk)
-    if last is not None and (now - last) < _DEDUP_SEC:
-        logger.info(
-            "Duplicate notify ignored for record_id=%s event=%s (within %ss)",
-            record_id,
-            event,
-            _DEDUP_SEC,
-        )
-        return {"status": "skipped_duplicate", "record_id": record_id, "event": event}
+    now = datetime.now()
+    record_history: Optional[RecordHistory] = recent_history.get(record_id)
+    new_scheduled_time = now + timedelta(seconds=_DEDUP_SEC)
+    new_job = scheduler.add_job(send_notification,
+                                trigger='date',
+                                run_date=new_scheduled_time,
+                                args=[payload],
+                                id=record_id,
+                                next_run_time=new_scheduled_time,
+                                replace_existing=True)
 
-    record = await fetch_record_by_id(record_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+    updated_record_history = RecordHistory(scheduled_time=new_scheduled_time,
+                                           scheduled_job=new_job,
+                                           last_sent_message_data=record_history.last_sent_message_data
+                                           if record_history else None
+                                           )
 
-    fields = record.get("fields") or {}
-    telegram_raw = fields.get("telegram")
-    if not telegram_raw or not str(telegram_raw).strip():
-        logger.info("Record %s has no telegram field; skip send", record_id)
-        return {"status": "skipped_no_telegram", "record_id": record_id, "event": event}
-
-    normalized = normalize_handle(str(telegram_raw).strip())
-    chat_id = await resolve_telegram_chat_id_for_notify(record, normalized)
-    if chat_id is None:
-        logger.info(
-            "No telegram_chat_id for handle=%s (user may not have /start the bot yet)",
-            normalized,
-        )
-        return {"status": "skipped_no_chat_id", "record_id": record_id, "event": event}
-
-    operator_directory: OperatorDirectory | None = None
-    try:
-        op_recs = await fetch_all_operator_records()
-        operator_directory = build_operator_directory(op_recs)
-    except Exception:
-        logger.warning("Could not load operators table for notify operator labels", exc_info=True)
-
-    loc = _notify_locale(payload, record)
-    text = _build_message_for_event(record, event, operator_directory, locale=loc)
-
-    await telegram_app.bot.send_message(chat_id, text)
-
-    backfill_count = 0
-    try:
-        need_chat_id = await fetch_matching_records_missing_telegram_chat_id(normalized)
-        ids_to_fix = [r["id"] for r in need_chat_id if r.get("id")]
-        if not ids_to_fix:
-            ids_to_fix = [record_id]
-        ok = await patch_telegram_chat_id_on_records(ids_to_fix, chat_id)
-        if ok:
-            backfill_count = len(ids_to_fix)
-            if backfill_count > 1:
-                logger.info(
-                    "Set telegram_chat_id on %s row(s) for handle=%s (same user, field was blank)",
-                    backfill_count,
-                    normalized,
-                )
-    except Exception:
-        logger.exception("PATCH telegram_chat_id after notify (backfill same-handle rows) failed")
-
-    _recent_notify_times[dk] = now
-    if len(_recent_notify_times) > 5000:
-        _recent_notify_times.clear()
-
-    return {
-        "status": "sent",
-        "record_id": record_id,
-        "event": event,
-        "chat_id": chat_id,
-        "telegram_chat_id_rows_patched": backfill_count,
-    }
+    recent_history[record_id] = updated_record_history

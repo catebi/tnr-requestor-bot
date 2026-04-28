@@ -8,11 +8,15 @@ Expose with ngrok: ngrok http 8080
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from datetime import datetime
+from typing import Any, Literal, Tuple, Dict
 
+from apscheduler.job import Job
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from tnr_bot.data.recent_history import RecordHistory
+from tnr_bot.data.record import Record
 from tnr_bot.integrations.airtable import (
     sterilization_language_field,
 )
@@ -29,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Short-window dedup for automation double-fires (seconds). Keyed by record_id + event
 # so operator and status updates in quick succession are not suppressed.
 _DEDUP_SEC = 45.0
-_recent_notify_times: dict[str, float] = {}
+recent_history: Dict[str, RecordHistory] = {}
 
 NotifyEvent = Literal["new_request", "operator_assigned", "status_changed"]
 
